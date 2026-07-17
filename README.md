@@ -12,7 +12,7 @@ CustomerPulse is an MCP-native, human-supervised customer and product operations
 
 ## Quick start
 
-1. Copy `.env.example` to `.env` and set `OPENAI_API_KEY`.
+1. Copy `.env.example` to `.env` and set `GROQ_API_KEY`.
 2. Run `docker compose up --build`.
 3. Open `http://localhost:5173`.
 4. Run the included UCI importer from the backend container if you want the full public dataset:

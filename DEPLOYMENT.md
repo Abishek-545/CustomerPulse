@@ -12,7 +12,7 @@ On first startup the API creates its tables and inserts demo data. Run the UCI i
 
 ## Render + Vercel
 
-1. Deploy `backend/` as a Docker web service on Render. Set `DATABASE_URL` and `BACKEND_CORS_ORIGINS`.
+1. Deploy `backend/` as a Docker web service on Render. Set `DATABASE_URL`, `BACKEND_CORS_ORIGINS`, and `GROQ_API_KEY`.
 2. Deploy `frontend/` on Vercel. Set `VITE_API_URL` to the deployed API URL.
 3. Update the backend CORS origin to the Vercel URL.
 
