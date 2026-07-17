@@ -2,7 +2,7 @@
 from datetime import datetime
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
-from .models import ApprovalRequest, AuditEvent, Campaign, Customer, Investigation, Memory, Order, Product, SupportCase
+from .models import ApprovalRequest, AuditEvent, Campaign, CampaignTarget, Customer, Investigation, Memory, Order, Product, SupportCase
 
 
 def audit(session: Session, tool: str, inputs: dict, output: dict, investigation_id: int | None = None) -> dict:
@@ -28,6 +28,21 @@ def find_churn_risk_customers(session: Session, min_risk: float = 0.65, limit: i
     return audit(session, "find_churn_risk_customers", {"min_risk": min_risk, "limit": limit}, result)
 
 
+def top_customers_by_lifetime_value(session: Session, limit: int = 5) -> dict:
+    rows = session.scalars(select(Customer).order_by(Customer.lifetime_value.desc()).limit(limit)).all()
+    return audit(session, "top_customers_by_lifetime_value", {"limit": limit}, {"customers": [{"id": c.id, "external_id": c.external_id, "country": c.country, "lifetime_value": float(c.lifetime_value), "risk": c.churn_risk} for c in rows]})
+
+
+def find_customers_by_country(session: Session, country: str, limit: int = 20) -> dict:
+    rows = session.scalars(select(Customer).where(Customer.country.ilike(country)).order_by(Customer.lifetime_value.desc()).limit(limit)).all()
+    return audit(session, "find_customers_by_country", {"country": country, "limit": limit}, {"customers": [{"id": c.id, "external_id": c.external_id, "segment": c.segment, "lifetime_value": float(c.lifetime_value)} for c in rows]})
+
+
+def get_customer_purchase_history(session: Session, customer_id: int, limit: int = 20) -> dict:
+    rows = session.scalars(select(Order).where(Order.customer_id == customer_id).order_by(Order.order_date.desc()).limit(limit)).all()
+    return audit(session, "get_customer_purchase_history", {"customer_id": customer_id}, {"orders": [{"invoice": o.invoice_number, "date": str(o.order_date), "total": float(o.total), "status": o.status} for o in rows]})
+
+
 def assign_customer_segment(session: Session, customer_id: int, segment: str) -> dict:
     customer = session.get(Customer, customer_id)
     if not customer:
@@ -50,11 +65,16 @@ def find_high_cancellation_products(session: Session, threshold: float = 0.10, l
     return audit(session, "find_high_cancellation_products", {"threshold": threshold, "limit": limit}, result)
 
 
-def create_campaign_draft(session: Session, name: str, segment: str, offer: str, investigation_id: int | None = None) -> dict:
+def create_campaign_draft(session: Session, name: str, segment: str, offer: str, investigation_id: int | None = None, customer_ids: list[int] | None = None) -> dict:
     campaign = Campaign(name=name, segment=segment, offer=offer, investigation_id=investigation_id)
     session.add(campaign)
+    session.flush()
+    selected = customer_ids or []
+    already_targeted = set(session.scalars(select(CampaignTarget.customer_id).join(Campaign).where(Campaign.status.in_(["draft", "active"]))).all())
+    eligible = [customer_id for customer_id in selected if customer_id not in already_targeted]
+    session.add_all([CampaignTarget(campaign_id=campaign.id, customer_id=customer_id) for customer_id in eligible])
     session.commit()
-    return audit(session, "create_campaign_draft", {"name": name, "segment": segment, "offer": offer}, {"campaign_id": campaign.id, "status": campaign.status}, investigation_id)
+    return audit(session, "create_campaign_draft", {"name": name, "segment": segment, "offer": offer, "requested_targets": len(selected)}, {"campaign_id": campaign.id, "status": campaign.status, "target_count": len(eligible), "excluded_existing_targets": len(selected) - len(eligible)}, investigation_id)
 
 
 def request_campaign_approval(session: Session, campaign_id: int, reason: str) -> dict:

@@ -2,13 +2,13 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from .db import Base, engine, get_session
 from .seed import seed
 from .graph import run_investigation
 from . import domain
-from .models import ApprovalRequest, AuditEvent, Campaign, Customer, Investigation, Product
+from .models import ApprovalRequest, AuditEvent, Campaign, CampaignTarget, Customer, Investigation, Product
 from .config import settings
 
 
@@ -96,7 +96,13 @@ def decide_approval(approval_id: int, payload: ApprovalDecision, session: Sessio
 @app.get("/api/campaigns")
 def campaigns(session: Session = Depends(get_session)):
     rows = session.scalars(select(Campaign).order_by(Campaign.id.desc())).all()
-    return [{"id": item.id, "name": item.name, "segment": item.segment, "offer": item.offer, "status": item.status, "investigation_id": item.investigation_id} for item in rows]
+    return [{"id": item.id, "name": item.name, "segment": item.segment, "offer": item.offer, "status": item.status, "investigation_id": item.investigation_id, "target_count": session.scalar(select(func.count()).select_from(CampaignTarget).where(CampaignTarget.campaign_id == item.id)) or 0} for item in rows]
+
+
+@app.get("/api/campaigns/{campaign_id}/targets")
+def campaign_targets(campaign_id: int, session: Session = Depends(get_session)):
+    rows = session.execute(select(CampaignTarget, Customer).join(Customer, Customer.id == CampaignTarget.customer_id).where(CampaignTarget.campaign_id == campaign_id)).all()
+    return [{"customer_id": customer.id, "external_id": customer.external_id, "segment": customer.segment, "risk": customer.churn_risk, "lifetime_value": float(customer.lifetime_value), "target_status": target.status} for target, customer in rows]
 
 
 @app.get("/api/audit-events")

@@ -51,16 +51,19 @@ def propose(state: AgentState) -> AgentState:
     if not state.get("create_retention_campaign"):
         return {"status": "complete"}
     with SessionLocal() as session:
+        churn = next((observation for observation in state.get("observations", []) if "customers" in observation), {"customers": []})
+        target_ids = [customer["id"] for customer in churn["customers"] if customer["segment"] == "at_risk_high_value"]
         draft = mcp_client.call_tool(
             "campaign.create_campaign_draft",
             name="Win-back: high-value inactive customers",
             segment="at_risk_high_value",
             offer="10% welcome-back discount",
             investigation_id=state["investigation_id"],
+            customer_ids=target_ids,
         )
         approval = mcp_client.call_tool("campaign.request_campaign_approval", campaign_id=draft["campaign_id"], reason="High-value customer retention action requires manager approval.")
         investigation = session.get(Investigation, state["investigation_id"])
-        investigation.findings = state["findings"] + ["Created a draft campaign and sent it for human approval."]
+        investigation.findings = state["findings"] + [f"Created a draft for {draft['target_count']} eligible high-value customers; excluded {draft['excluded_existing_targets']} already-targeted customers."]
         investigation.status = "awaiting_approval"
         session.commit()
     return {"campaign_id": draft["campaign_id"], "approval_id": approval["approval_id"], "status": "awaiting_approval"}

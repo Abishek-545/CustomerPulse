@@ -22,6 +22,21 @@ def customer_server() -> FastMCP:
             return domain.find_churn_risk_customers(session, min_risk, limit)
 
     @mcp.tool()
+    def top_customers_by_lifetime_value(limit: int = 5) -> dict:
+        with SessionLocal() as session:
+            return domain.top_customers_by_lifetime_value(session, limit)
+
+    @mcp.tool()
+    def find_customers_by_country(country: str, limit: int = 20) -> dict:
+        with SessionLocal() as session:
+            return domain.find_customers_by_country(session, country, limit)
+
+    @mcp.tool()
+    def get_customer_purchase_history(customer_id: int, limit: int = 20) -> dict:
+        with SessionLocal() as session:
+            return domain.get_customer_purchase_history(session, customer_id, limit)
+
+    @mcp.tool()
     def get_customer_profile(customer_id: int) -> dict:
         with SessionLocal() as session:
             return domain.get_customer_profile(session, customer_id)
