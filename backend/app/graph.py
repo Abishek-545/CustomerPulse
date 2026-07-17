@@ -97,5 +97,14 @@ def run_investigation(goal: str) -> dict:
         session.add(investigation)
         session.commit()
         investigation_id = investigation.id
-    state = agent_graph.invoke({"investigation_id": investigation_id, "goal": goal}, {"configurable": {"thread_id": f"investigation-{investigation_id}"}})
-    return {"investigation_id": investigation_id, **state}
+    try:
+        state = agent_graph.invoke({"investigation_id": investigation_id, "goal": goal}, {"configurable": {"thread_id": f"investigation-{investigation_id}"}})
+        return {"investigation_id": investigation_id, **state}
+    except Exception as error:
+        message = f"{type(error).__name__}: {error}"
+        with SessionLocal() as session:
+            investigation = session.get(Investigation, investigation_id)
+            investigation.status = "failed"
+            investigation.findings = [f"Agent execution failed: {message}"]
+            session.commit()
+        return {"investigation_id": investigation_id, "status": "failed", "error": message}

@@ -23,7 +23,7 @@ function App() {
     try {
       const [d, c, p, i, a, logs] = await Promise.all([request("/api/dashboard"), request("/api/customers"), request("/api/products"), request("/api/investigations"), request("/api/approvals"), request("/api/audit-events")]);
       setDashboard(d); setCustomers(c); setProducts(p); setInvestigations(i); setApprovals(a); setAudits(logs); setError("");
-    } catch (e) { setError("Could not reach the API. Start Docker Compose, then refresh."); }
+    } catch (e) { setError("Could not reach the live API. Check the backend service and CORS configuration, then refresh."); }
   };
   useEffect(() => { refresh(); }, []);
   const investigate = async () => { setBusy(true); try { await request("/api/investigations", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({goal})}); await refresh(); } catch { setError("Investigation failed."); } finally { setBusy(false); } };
