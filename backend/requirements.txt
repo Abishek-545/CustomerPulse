@@ -8,6 +8,5 @@ langgraph==0.6.4
 groq==0.31.0
 mcp==1.12.4
 httpx==0.28.1
-pandas==2.3.1
 openpyxl==3.1.5
 pytest==8.4.1

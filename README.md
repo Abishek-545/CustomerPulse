@@ -21,7 +21,7 @@ CustomerPulse is an MCP-native, human-supervised customer and product operations
 python -m app.import_retail_data
 ```
 
-The app starts with a small safe seed dataset, so it works without downloading data. The importer uses UCI's Online Retail public dataset (541,909 transaction records).
+The app starts with a small safe seed dataset, so it works without downloading data. The importer uses UCI's Online Retail public dataset (541,909 transaction records). It imports 50,000 rows by default to fit Render's 256 MB service; set `RETAIL_IMPORT_LIMIT=0` only on an instance with at least 512 MB RAM.
 
 ## Architecture
 
