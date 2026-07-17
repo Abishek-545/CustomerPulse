@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: customerpulse-api
+    runtime: docker
+    rootDir: backend
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: BACKEND_CORS_ORIGINS
+        sync: false
+  - type: web
+    name: customerpulse-ui
+    runtime: docker
+    rootDir: frontend
+    dockerfilePath: ./Dockerfile
