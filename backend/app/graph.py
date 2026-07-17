@@ -1,58 +1,91 @@
-from typing import TypedDict
-from langgraph.graph import END, START, StateGraph
+"""Intent-aware multi-agent workflow.
+
+The supervisor delegates to specialist agents. They communicate through the
+typed LangGraph state, and only the campaign agent is allowed to create data.
+"""
+from typing import Any, TypedDict
+
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.graph import END, START, StateGraph
+
 from .db import SessionLocal
-from . import domain
 from .mcp_client import mcp_client
 from .models import Investigation
-from .reasoner import create_plan
+from .reasoner import route_goal
 
 
 class AgentState(TypedDict, total=False):
     investigation_id: int
     goal: str
+    intent: str
+    params: dict[str, Any]
     plan: list[str]
-    observations: list[dict]
+    observations: dict[str, Any]
     findings: list[str]
+    result: dict[str, Any]
+    status: str
     campaign_id: int
     approval_id: int
-    status: str
-    create_retention_campaign: bool
 
 
-def plan(state: AgentState) -> AgentState:
-    agent_plan = create_plan(state["goal"])
-    steps = agent_plan.steps
+def supervisor_agent(state: AgentState) -> AgentState:
+    route = route_goal(state["goal"])
+    plans = {
+        "top_customers": ["Supervisor routes read-only request", "Customer Intelligence Agent ranks lifetime value", "Response Agent formats evidence"],
+        "customer_detail": ["Supervisor extracts customer ID", "Customer Intelligence Agent retrieves profile", "Response Agent explains metrics"],
+        "purchase_history": ["Supervisor extracts customer ID", "Customer Intelligence Agent retrieves orders", "Response Agent formats purchase history"],
+        "country_customers": ["Supervisor extracts location", "Customer Intelligence Agent filters geography", "Response Agent ranks matching customers"],
+        "churn_analysis": ["Customer Intelligence Agent identifies risk", "Product Agent inspects product signals", "Memory Agent retrieves prior learnings", "Response Agent synthesizes findings"],
+        "retention_campaign": ["Customer Intelligence Agent selects eligible customers", "Product Agent validates signals", "Memory Agent retrieves policy context", "Campaign Agent excludes duplicate targets", "Safety gate requests human approval"],
+    }
+    plan = plans[route.intent]
     with SessionLocal() as session:
-        investigation = session.get(Investigation, state["investigation_id"])
-        investigation.plan = steps
+        item = session.get(Investigation, state["investigation_id"])
+        item.plan = plan
         session.commit()
-    return {"plan": steps, "observations": [], "findings": [f"Planner rationale: {agent_plan.rationale}"], "create_retention_campaign": agent_plan.create_retention_campaign}
+    return {"intent": route.intent, "params": route.model_dump(), "plan": plan, "observations": {}, "findings": [f"Supervisor: {route.rationale}"]}
 
 
-def investigate(state: AgentState) -> AgentState:
-    with SessionLocal() as session:
-        # Calls are intentionally routed through the MCP tool gateway. The gateway
-        # enforces the tool allowlist and is replaceable with Streamable HTTP clients.
-        churn = mcp_client.call_tool("customer.find_churn_risk_customers", min_risk=0.65, limit=10)
-        products = mcp_client.call_tool("product.find_high_cancellation_products", threshold=0.10, limit=10)
-        memories = mcp_client.call_tool("memory.search_memories", query="offer", limit=5)
-    findings = list(state.get("findings", []))
-    if churn["customers"]:
-        findings.append(f"Found {len(churn['customers'])} high-risk customers; highest-value customer risk requires retention action.")
-    if products["products"]:
-        findings.append(f"Found {len(products['products'])} products with elevated cancellation rates.")
-    if memories["memories"]:
-        findings.append("Found prior business memory relevant to a retention offer.")
-    return {"observations": [churn, products, memories], "findings": findings}
+def customer_intelligence_agent(state: AgentState) -> AgentState:
+    intent, params = state["intent"], state["params"]
+    if intent == "top_customers":
+        data = mcp_client.call_tool("customer.top_customers_by_lifetime_value", limit=params["limit"])
+    elif intent == "customer_detail":
+        data = mcp_client.call_tool("customer.get_customer_by_external_id", external_id=params["customer_external_id"])
+    elif intent == "purchase_history":
+        data = mcp_client.call_tool("customer.get_purchase_history_by_external_id", external_id=params["customer_external_id"], limit=params["limit"])
+    elif intent == "country_customers":
+        data = mcp_client.call_tool("customer.find_customers_by_country", country=params["country"], limit=params["limit"])
+    elif intent == "retention_campaign":
+        data = mcp_client.call_tool("customer.find_eligible_retention_customers", limit=params["limit"])
+    else:
+        data = mcp_client.call_tool("customer.find_churn_risk_customers", min_risk=0.65, limit=params["limit"])
+    observations = {**state.get("observations", {}), "customer_agent": data}
+    return {"observations": observations, "findings": state["findings"] + ["Customer Intelligence Agent completed its MCP data query."]}
 
 
-def propose(state: AgentState) -> AgentState:
-    if not state.get("create_retention_campaign"):
-        return {"status": "complete"}
-    with SessionLocal() as session:
-        churn = next((observation for observation in state.get("observations", []) if "customers" in observation), {"customers": []})
-        target_ids = [customer["id"] for customer in churn["customers"] if customer["segment"] == "at_risk_high_value"]
+def product_intelligence_agent(state: AgentState) -> AgentState:
+    if state["intent"] not in ("churn_analysis", "retention_campaign"):
+        return {}
+    data = mcp_client.call_tool("product.find_high_cancellation_products", threshold=0.10, limit=10)
+    return {"observations": {**state["observations"], "product_agent": data}, "findings": state["findings"] + ["Product Intelligence Agent checked cancellation signals."]}
+
+
+def memory_agent(state: AgentState) -> AgentState:
+    if state["intent"] not in ("churn_analysis", "retention_campaign"):
+        return {}
+    data = mcp_client.call_tool("memory.search_memories", query="offer", limit=5)
+    return {"observations": {**state["observations"], "memory_agent": data}, "findings": state["findings"] + ["Memory Agent retrieved relevant business learnings."]}
+
+
+def campaign_agent(state: AgentState) -> AgentState:
+    if state["intent"] != "retention_campaign":
+        return {}
+    customers = state["observations"]["customer_agent"].get("customers", [])
+    target_ids = [item["id"] for item in customers if item.get("segment") == "at_risk_high_value"]
+    if not target_ids:
+        return {"status": "complete", "result": {"kind": "campaign", "created": False, "summary": "No eligible high-value customers remain; no duplicate campaign was created.", "target_count": 0}}
+    try:
         draft = mcp_client.call_tool(
             "campaign.create_campaign_draft",
             name="Win-back: high-value inactive customers",
@@ -61,36 +94,47 @@ def propose(state: AgentState) -> AgentState:
             investigation_id=state["investigation_id"],
             customer_ids=target_ids,
         )
-        approval = mcp_client.call_tool("campaign.request_campaign_approval", campaign_id=draft["campaign_id"], reason="High-value customer retention action requires manager approval.")
-        investigation = session.get(Investigation, state["investigation_id"])
-        investigation.findings = state["findings"] + [f"Created a draft for {draft['target_count']} eligible high-value customers; excluded {draft['excluded_existing_targets']} already-targeted customers."]
-        investigation.status = "awaiting_approval"
-        session.commit()
-    return {"campaign_id": draft["campaign_id"], "approval_id": approval["approval_id"], "status": "awaiting_approval"}
+    except ValueError:
+        return {"status": "complete", "result": {"kind": "campaign", "created": False, "summary": "Eligible customers were claimed by another campaign; no duplicate was created.", "target_count": 0}}
+    approval = mcp_client.call_tool("campaign.request_campaign_approval", campaign_id=draft["campaign_id"], reason=f"Approve retention action for {draft['target_count']} specifically identified customers.")
+    return {
+        "campaign_id": draft["campaign_id"], "approval_id": approval["approval_id"], "status": "awaiting_approval",
+        "result": {"kind": "campaign", "created": True, **draft, "summary": f"Draft campaign targets {draft['target_count']} customers and excluded {draft['excluded_existing_targets']} duplicates."},
+        "findings": state["findings"] + [f"Campaign Agent selected {draft['target_count']} unique customers and requested approval."],
+    }
 
 
-def learn(state: AgentState) -> AgentState:
-    if state.get("status") == "awaiting_approval":
-        return state
+def response_agent(state: AgentState) -> AgentState:
+    result = state.get("result") or {
+        "kind": state["intent"],
+        "data": state["observations"].get("customer_agent", {}),
+        "supporting_evidence": {key: value for key, value in state["observations"].items() if key != "customer_agent"},
+        "agents": ["Supervisor", "Customer Intelligence"] + (["Product Intelligence", "Memory"] if state["intent"] == "churn_analysis" else []) + ["Response"],
+        "summary": "Read-only request completed. No campaign was created.",
+    }
+    status = state.get("status", "complete")
     with SessionLocal() as session:
-        domain.save_business_learning(session, "investigation", f"Completed investigation: {state['goal']}. Findings: {' '.join(state.get('findings', []))}")
-        investigation = session.get(Investigation, state["investigation_id"])
-        investigation.status = "complete"
-        investigation.findings = state.get("findings", [])
+        item = session.get(Investigation, state["investigation_id"])
+        item.status = status
+        item.findings = state.get("findings", []) + [result["summary"]]
         session.commit()
-    return {"status": "complete"}
+    return {"status": status, "result": result}
 
 
 workflow = StateGraph(AgentState)
-workflow.add_node("plan", plan)
-workflow.add_node("investigate", investigate)
-workflow.add_node("propose", propose)
-workflow.add_node("learn", learn)
-workflow.add_edge(START, "plan")
-workflow.add_edge("plan", "investigate")
-workflow.add_edge("investigate", "propose")
-workflow.add_edge("propose", "learn")
-workflow.add_edge("learn", END)
+workflow.add_node("supervisor", supervisor_agent)
+workflow.add_node("customer_intelligence", customer_intelligence_agent)
+workflow.add_node("product_intelligence", product_intelligence_agent)
+workflow.add_node("memory", memory_agent)
+workflow.add_node("campaign", campaign_agent)
+workflow.add_node("response", response_agent)
+workflow.add_edge(START, "supervisor")
+workflow.add_edge("supervisor", "customer_intelligence")
+workflow.add_edge("customer_intelligence", "product_intelligence")
+workflow.add_edge("product_intelligence", "memory")
+workflow.add_edge("memory", "campaign")
+workflow.add_edge("campaign", "response")
+workflow.add_edge("response", END)
 agent_graph = workflow.compile(checkpointer=MemorySaver())
 
 

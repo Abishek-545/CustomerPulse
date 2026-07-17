@@ -22,6 +22,11 @@ def customer_server() -> FastMCP:
             return domain.find_churn_risk_customers(session, min_risk, limit)
 
     @mcp.tool()
+    def find_eligible_retention_customers(limit: int = 20) -> dict:
+        with SessionLocal() as session:
+            return domain.find_eligible_retention_customers(session, limit)
+
+    @mcp.tool()
     def top_customers_by_lifetime_value(limit: int = 5) -> dict:
         with SessionLocal() as session:
             return domain.top_customers_by_lifetime_value(session, limit)
@@ -40,6 +45,16 @@ def customer_server() -> FastMCP:
     def get_customer_profile(customer_id: int) -> dict:
         with SessionLocal() as session:
             return domain.get_customer_profile(session, customer_id)
+
+    @mcp.tool()
+    def get_customer_by_external_id(external_id: str) -> dict:
+        with SessionLocal() as session:
+            return domain.get_customer_by_external_id(session, external_id)
+
+    @mcp.tool()
+    def get_purchase_history_by_external_id(external_id: str, limit: int = 20) -> dict:
+        with SessionLocal() as session:
+            return domain.get_purchase_history_by_external_id(session, external_id, limit)
 
     @mcp.tool()
     def assign_customer_segment(customer_id: int, segment: str) -> dict:
@@ -83,9 +98,9 @@ def campaign_server() -> FastMCP:
         return "Create a narrowly targeted draft after evidence is collected. Always submit it for human approval."
 
     @mcp.tool()
-    def create_campaign_draft(name: str, segment: str, offer: str) -> dict:
+    def create_campaign_draft(name: str, segment: str, offer: str, customer_ids: list[int], investigation_id: int | None = None) -> dict:
         with SessionLocal() as session:
-            return domain.create_campaign_draft(session, name, segment, offer)
+            return domain.create_campaign_draft(session, name, segment, offer, investigation_id, customer_ids)
 
     @mcp.tool()
     def request_campaign_approval(campaign_id: int, reason: str) -> dict:

@@ -1,14 +1,15 @@
 # CustomerPulse
 
-CustomerPulse is an MCP-native, human-supervised customer and product operations agent. It imports real retail transactions into PostgreSQL, investigates goals such as churn reduction or product decline, uses LangGraph to plan and revise work, and performs controlled CRUD through domain MCP tools.
+CustomerPulse is an MCP-native, human-supervised multi-agent customer operations platform. It imports real retail transactions into PostgreSQL, routes natural-language requests to specialist LangGraph agents, and performs controlled CRUD through domain MCP tools.
 
 ## What it demonstrates
 
 - Real relational data: customers, products, orders, campaigns, support cases, approvals and audit events.
-- Agent loop: plan -> investigate -> observe -> re-plan -> propose -> approve -> act -> learn.
+- Multi-agent workflow: Supervisor -> Customer Intelligence -> Product Intelligence -> Memory -> Campaign/Safety -> Response.
 - MCP architecture: distinct Customer, Product, Campaign and Memory servers expose tools, resources and prompts.
-- Durable agent state: LangGraph PostgreSQL checkpoints plus long-term business memories.
-- Safe actions: the agent creates drafts only; a person must approve before a campaign is activated.
+- Intent-safe routing: rankings, profiles, geography, purchase history and churn analysis are read-only; only explicit campaign requests can create data.
+- Long-term memory: business learnings are stored in PostgreSQL and retrieved through the Memory MCP server.
+- Safe actions: campaigns store exact customer targets, exclude customers already targeted by draft/active campaigns, and require human approval.
 
 ## Quick start
 
@@ -26,9 +27,9 @@ The app starts with a small safe seed dataset, so it works without downloading d
 ## Architecture
 
 ```text
-React dashboard -> FastAPI -> LangGraph coordinator -> MCP domain servers -> PostgreSQL
-                                         |                    |
-                                  checkpoints/memory       safe CRUD tools
+React workspace -> FastAPI -> LangGraph supervisor -> specialist agents
+                                                    -> MCP domain servers -> PostgreSQL
+                                                       tools/resources/prompts
 ```
 
 The backend calls the same typed domain functions used by the MCP servers. This keeps local development simple while preserving the MCP boundary for remote deployment. Set `MCP_TRANSPORT=streamable-http` when deploying servers independently.

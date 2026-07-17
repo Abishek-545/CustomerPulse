@@ -49,6 +49,22 @@ def customers(limit: int = 50, session: Session = Depends(get_session)):
     return [{"id": c.id, "external_id": c.external_id, "country": c.country, "segment": c.segment, "churn_risk": c.churn_risk, "lifetime_value": float(c.lifetime_value), "last_purchase_at": c.last_purchase_at} for c in rows]
 
 
+@app.get("/api/customers/{external_id}")
+def customer_detail(external_id: str, session: Session = Depends(get_session)):
+    try:
+        return domain.get_customer_by_external_id(session, external_id)
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+
+@app.get("/api/customers/{external_id}/purchases")
+def customer_purchases(external_id: str, limit: int = 20, session: Session = Depends(get_session)):
+    try:
+        return domain.get_purchase_history_by_external_id(session, external_id, limit)
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+
 @app.get("/api/products")
 def products(session: Session = Depends(get_session)):
     rows = session.scalars(select(Product).order_by(Product.sales_trend.asc())).all()
@@ -82,6 +98,7 @@ def approvals(session: Session = Depends(get_session)):
         "reason": request.reason,
         "status": request.status,
         "decided_by": request.decided_by,
+        "target_count": session.scalar(select(func.count()).select_from(CampaignTarget).where(CampaignTarget.campaign_id == campaign.id)) or 0,
     } for request, campaign in rows]
 
 

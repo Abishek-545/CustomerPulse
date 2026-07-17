@@ -13,10 +13,13 @@ class CustomerPulseMCPClient:
         with SessionLocal() as session:
             tools = {
                 "customer.find_churn_risk_customers": domain.find_churn_risk_customers,
+                "customer.find_eligible_retention_customers": domain.find_eligible_retention_customers,
                 "customer.top_customers_by_lifetime_value": domain.top_customers_by_lifetime_value,
                 "customer.find_customers_by_country": domain.find_customers_by_country,
                 "customer.get_customer_purchase_history": domain.get_customer_purchase_history,
                 "customer.get_customer_profile": domain.get_customer_profile,
+                "customer.get_customer_by_external_id": domain.get_customer_by_external_id,
+                "customer.get_purchase_history_by_external_id": domain.get_purchase_history_by_external_id,
                 "customer.assign_customer_segment": domain.assign_customer_segment,
                 "product.get_product_performance": domain.get_product_performance,
                 "product.find_high_cancellation_products": domain.find_high_cancellation_products,
