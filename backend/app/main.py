@@ -68,8 +68,21 @@ def investigations(session: Session = Depends(get_session)):
 
 @app.get("/api/approvals")
 def approvals(session: Session = Depends(get_session)):
-    rows = session.scalars(select(ApprovalRequest).order_by(ApprovalRequest.id.desc())).all()
-    return [{"id": item.id, "campaign_id": item.campaign_id, "reason": item.reason, "status": item.status, "decided_by": item.decided_by} for item in rows]
+    rows = session.execute(
+        select(ApprovalRequest, Campaign)
+        .join(Campaign, Campaign.id == ApprovalRequest.campaign_id)
+        .order_by(ApprovalRequest.id.desc())
+    ).all()
+    return [{
+        "id": request.id,
+        "campaign_id": request.campaign_id,
+        "campaign_name": campaign.name,
+        "campaign_offer": campaign.offer,
+        "campaign_status": campaign.status,
+        "reason": request.reason,
+        "status": request.status,
+        "decided_by": request.decided_by,
+    } for request, campaign in rows]
 
 
 @app.post("/api/approvals/{approval_id}/decision")
