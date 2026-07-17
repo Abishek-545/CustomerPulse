@@ -5,7 +5,7 @@ import "./styles.css";
 declare global {
   interface Window { __CUSTOMERPULSE_CONFIG__?: { API_URL?: string } }
 }
-const API = window.__CUSTOMERPULSE_CONFIG__?.API_URL || "http://localhost:8000";
+const API = window.__CUSTOMERPULSE_CONFIG__?.API_URL || import.meta.env.VITE_API_URL || "http://localhost:8000";
 type Dashboard = { customers: number; products: number; orders: number; high_risk_customers: number; pending_approvals: number };
 const request = (path: string, options?: RequestInit) => fetch(`${API}${path}`, options).then(async r => { if (!r.ok) throw new Error(await r.text()); return r.json(); });
 
