@@ -18,7 +18,7 @@ def get_customer_profile(session: Session, customer_id: int) -> dict:
     return audit(session, "get_customer_profile", {"customer_id": customer_id}, {
         "id": customer.id, "external_id": customer.external_id, "country": customer.country,
         "segment": customer.segment, "churn_risk": customer.churn_risk,
-        "lifetime_value": float(customer.lifetime_value), "last_purchase_at": str(customer.last_purchase_at),
+        "lifetime_value": float(customer.lifetime_value), "last_purchase_at": customer.last_purchase_at.isoformat() if customer.last_purchase_at else None,
     })
 
 

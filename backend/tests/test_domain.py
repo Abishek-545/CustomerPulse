@@ -23,6 +23,7 @@ def test_read_only_customer_query_never_routes_to_campaign():
     route = route_goal("show top 5 customers")
     assert route.intent == "top_customers"
     assert route.limit == 5
+    assert route_goal("Show customer 16246 details").customer_external_id == "16246"
 
 
 def test_campaign_targets_are_saved_and_not_retargeted():

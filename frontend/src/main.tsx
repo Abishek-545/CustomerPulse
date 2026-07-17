@@ -44,7 +44,7 @@ function App() {
 
   const execute = async (prompt = query) => {
     if (prompt.trim().length < 3) return;
-    setQuery(prompt); setBusy(true); setError(""); setTab("workspace");
+    setQuery(prompt); setAgentResult(null); setBusy(true); setError(""); setTab("workspace");
     try {
       const response = await call("/api/investigations", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ goal: prompt }) });
       if (response.status === "failed") throw new Error(response.error || "Agent execution failed");
@@ -82,7 +82,7 @@ function App() {
       <header className="topbar"><div><p className="kicker">CUSTOMER INTELLIGENCE PLATFORM</p><h1>{tab === "overview" ? "Operations overview" : tab === "workspace" ? "Multi-agent workspace" : tab[0].toUpperCase() + tab.slice(1)}</h1></div><button className="secondary" onClick={refresh}>↻ Refresh</button></header>
       {error && <div className="alert"><b>Action needed</b><span>{error}</span><button onClick={() => setError("")}>×</button></div>}
       {tab === "overview" && <Overview dashboard={dashboard} investigations={investigations} campaigns={campaigns} pending={pending} products={products} execute={execute} />}
-      {tab === "workspace" && <Workspace query={query} setQuery={setQuery} execute={execute} busy={busy} response={agentResult} investigations={investigations} />}
+      {tab === "workspace" && <Workspace query={query} setQuery={setQuery} clearResult={() => setAgentResult(null)} execute={execute} busy={busy} response={agentResult} investigations={investigations} />}
       {tab === "customers" && <Customers rows={filteredCustomers} search={search} setSearch={setSearch} execute={execute} />}
       {tab === "campaigns" && <Campaigns campaigns={campaigns} approvals={approvals} targets={targets} expanded={expandedCampaign} toggle={toggleTargets} decide={decide} />}
       {tab === "audit" && <Audit rows={audits} />}
@@ -113,11 +113,11 @@ function Overview({ dashboard, investigations, campaigns, pending, products, exe
   </>;
 }
 
-function Workspace({ query, setQuery, execute, busy, response, investigations }: any) {
+function Workspace({ query, setQuery, clearResult, execute, busy, response, investigations }: any) {
   const examples = ["Show top 5 customers by lifetime value", "Show customer 16244 details", "Show purchase history for customer 16244", "Show customers in France", "Analyze churn risk", "Create a retention campaign for 10 high-value customers"];
   return <>
     <section className="command-card"><div className="command-title"><div className="agent-orb">✦</div><div><h2>Ask CustomerPulse</h2><p>Supervisor routes your request to the correct specialist agents.</p></div></div>
-      <div className="command-box"><textarea value={query} onChange={event => setQuery(event.target.value)} onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); execute(); } }} placeholder="Ask about customers, purchases, locations, churn, or explicitly create a campaign…"/><button disabled={busy} onClick={() => execute()}>{busy ? "Agents working…" : "Run request →"}</button></div>
+      <div className="command-box"><textarea value={query} onChange={event => { setQuery(event.target.value); clearResult(); }} onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); execute(); } }} placeholder="Ask about customers, purchases, locations, churn, or explicitly create a campaign…"/><button disabled={busy} onClick={() => execute()}>{busy ? "Agents working…" : "Run request →"}</button></div>
       <div className="chips">{examples.map(item => <button key={item} onClick={() => execute(item)}>{item}</button>)}</div>
     </section>
     {busy && <section className="working"><i></i><div><b>Multi-agent workflow is running</b><span>Supervisor → Customer Intelligence → Product Intelligence → Memory → Response</span></div></section>}
