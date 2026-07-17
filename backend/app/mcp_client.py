@@ -9,7 +9,7 @@ from . import domain
 
 
 class CustomerPulseMCPClient:
-    def call_tool(self, name: str, **arguments) -> dict:
+    def call_tool(self, tool_name: str, **arguments) -> dict:
         with SessionLocal() as session:
             tools = {
                 "customer.find_churn_risk_customers": domain.find_churn_risk_customers,
@@ -22,9 +22,9 @@ class CustomerPulseMCPClient:
                 "memory.search_memories": domain.search_memories,
                 "memory.save_business_learning": domain.save_business_learning,
             }
-            if name not in tools:
-                raise ValueError(f"Tool is not allowlisted: {name}")
-            return tools[name](session, **arguments)
+            if tool_name not in tools:
+                raise ValueError(f"Tool is not allowlisted: {tool_name}")
+            return tools[tool_name](session, **arguments)
 
 
 mcp_client = CustomerPulseMCPClient()
