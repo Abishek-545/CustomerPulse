@@ -1,6 +1,6 @@
-"""Campaign email delivery with a safe demo-recipient override.
+"""Campaign email delivery using the address stored on each customer.
 
-All customer records intentionally map to one configured inbox until real customer
+All demo customer records currently contain one safe test inbox until real customer
 emails and consent management are added. Delivery is idempotent per campaign target.
 """
 from datetime import datetime
@@ -52,7 +52,7 @@ def deliver_campaign_emails(session: Session, campaign_id: int) -> dict:
             campaign_id=campaign.id,
             campaign_target_id=target.id,
             customer_id=customer.id,
-            recipient=settings.demo_recipient_email,
+            recipient=customer.email or settings.demo_recipient_email,
             subject=subject,
             body=body,
         )
@@ -105,7 +105,7 @@ def delivery_summary(session: Session, campaign_id: int) -> dict:
     total = sum(counts.values())
     return {
         "campaign_id": campaign_id,
-        "recipient_override": settings.demo_recipient_email,
+        "recipient_source": "customers.email",
         "mode": settings.email_mode,
         "total": total,
         "queued": counts.get("queued", 0),

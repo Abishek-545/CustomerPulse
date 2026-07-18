@@ -3,6 +3,7 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from .models import Customer, Memory, Order, OrderItem, Product
+from .config import settings
 
 
 def seed(session: Session) -> None:
@@ -15,10 +16,10 @@ def seed(session: Session) -> None:
     ]
     session.add_all(products); session.flush()
     customers = [
-        Customer(external_id="C-1001", country="United Kingdom", segment="champion", churn_risk=0.21, lifetime_value=Decimal("1250"), last_purchase_at=datetime.utcnow()-timedelta(days=4)),
-        Customer(external_id="C-1002", country="Germany", segment="at_risk_high_value", churn_risk=0.82, lifetime_value=Decimal("1120"), last_purchase_at=datetime.utcnow()-timedelta(days=140)),
-        Customer(external_id="C-1003", country="France", segment="at_risk_high_value", churn_risk=0.74, lifetime_value=Decimal("890"), last_purchase_at=datetime.utcnow()-timedelta(days=102)),
-        Customer(external_id="C-1004", country="United Kingdom", segment="new", churn_risk=0.32, lifetime_value=Decimal("90"), last_purchase_at=datetime.utcnow()-timedelta(days=12)),
+        Customer(external_id="C-1001", email=settings.demo_recipient_email, country="United Kingdom", segment="champion", churn_risk=0.21, lifetime_value=Decimal("1250"), last_purchase_at=datetime.utcnow()-timedelta(days=4)),
+        Customer(external_id="C-1002", email=settings.demo_recipient_email, country="Germany", segment="at_risk_high_value", churn_risk=0.82, lifetime_value=Decimal("1120"), last_purchase_at=datetime.utcnow()-timedelta(days=140)),
+        Customer(external_id="C-1003", email=settings.demo_recipient_email, country="France", segment="at_risk_high_value", churn_risk=0.74, lifetime_value=Decimal("890"), last_purchase_at=datetime.utcnow()-timedelta(days=102)),
+        Customer(external_id="C-1004", email=settings.demo_recipient_email, country="United Kingdom", segment="new", churn_risk=0.32, lifetime_value=Decimal("90"), last_purchase_at=datetime.utcnow()-timedelta(days=12)),
     ]
     session.add_all(customers); session.flush()
     for index, customer in enumerate(customers):

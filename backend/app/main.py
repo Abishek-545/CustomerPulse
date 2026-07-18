@@ -14,6 +14,7 @@ from .config import settings
 from .mcp_client import mcp_client
 from .mcp_servers import SERVERS
 from .evaluations import list_evaluation_runs, run_offline_evaluations
+from .schema_migrations import migrate_customer_email
 
 
 MCP_SERVERS = {name: factory() for name, factory in SERVERS.items()}
@@ -22,6 +23,7 @@ MCP_SERVERS = {name: factory() for name, factory in SERVERS.items()}
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     Base.metadata.create_all(engine)
+    migrate_customer_email(engine)
     with next(get_session()) as session:
         seed(session)
     async with AsyncExitStack() as stack:
@@ -66,7 +68,7 @@ def dashboard(session: Session = Depends(get_session)):
 @app.get("/api/customers")
 def customers(limit: int = 50, session: Session = Depends(get_session)):
     rows = session.scalars(select(Customer).order_by(Customer.churn_risk.desc()).limit(limit)).all()
-    return [{"id": c.id, "external_id": c.external_id, "country": c.country, "segment": c.segment, "churn_risk": c.churn_risk, "lifetime_value": float(c.lifetime_value), "last_purchase_at": c.last_purchase_at} for c in rows]
+    return [{"id": c.id, "external_id": c.external_id, "email": c.email, "country": c.country, "segment": c.segment, "churn_risk": c.churn_risk, "lifetime_value": float(c.lifetime_value), "last_purchase_at": c.last_purchase_at} for c in rows]
 
 
 @app.get("/api/customers/{external_id}")

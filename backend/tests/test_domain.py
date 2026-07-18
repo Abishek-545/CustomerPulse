@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 from app.db import Base
 from app.domain import create_campaign_draft, create_support_cases_for_customers, dashboard_summary, decide_campaign_approval, explain_platform, find_churn_risk_customers, find_eligible_retention_customers, list_operational_tasks, request_campaign_approval, simulate_campaign_outcome
@@ -6,6 +6,7 @@ from app.evaluations import run_offline_evaluations
 from app.models import CampaignTarget, Customer, EmailDelivery, Memory
 from app.reasoner import route_goal
 from app.config import settings
+from app.schema_migrations import migrate_customer_email
 
 
 def test_campaign_requires_approval_before_activation():
@@ -79,6 +80,17 @@ def test_support_cases_are_visible_in_operations_backlog():
     assert len(tasks) == 1
     assert tasks[0]["type"] == "support_followup"
     assert tasks[0]["payload"]["customer_external_id"] == "support-101"
+
+
+def test_customer_email_migration_backfills_existing_rows():
+    engine = create_engine("sqlite://")
+    with engine.begin() as connection:
+        connection.execute(text("CREATE TABLE customers (id INTEGER PRIMARY KEY, external_id VARCHAR(64))"))
+        connection.execute(text("INSERT INTO customers (external_id) VALUES ('legacy-1'), ('legacy-2')"))
+    migrate_customer_email(engine)
+    with engine.connect() as connection:
+        emails = connection.execute(text("SELECT email FROM customers ORDER BY id")).scalars().all()
+    assert emails == ["temp66642@gmail.com", "temp66642@gmail.com"]
 
 
 def test_approval_creates_idempotent_demo_email_and_outcome_learning():

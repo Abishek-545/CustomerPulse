@@ -9,6 +9,7 @@ class Customer(Base):
     __tablename__ = "customers"
     id: Mapped[int] = mapped_column(primary_key=True)
     external_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    email: Mapped[str] = mapped_column(String(320), default="temp66642@gmail.com", index=True)
     country: Mapped[str | None] = mapped_column(String(100))
     segment: Mapped[str] = mapped_column(String(50), default="unsegmented", index=True)
     churn_risk: Mapped[float] = mapped_column(default=0.0)

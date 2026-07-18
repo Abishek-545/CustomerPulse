@@ -113,7 +113,7 @@ def import_data() -> None:
                 if customer_id is None:
                     customer = session.scalar(select(Customer).where(Customer.external_id == first["customer"]))
                     if not customer:
-                        customer = Customer(external_id=first["customer"], country=first["country"])
+                        customer = Customer(external_id=first["customer"], country=first["country"], email=os.getenv("DEMO_RECIPIENT_EMAIL", "temp66642@gmail.com"))
                         session.add(customer)
                         session.flush()
                     customer_id = customer.id

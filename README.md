@@ -43,7 +43,7 @@ The production agent gateway uses the official MCP client lifecycle and performs
 
 Only an explicit campaign request can create a draft. Draft and active customer IDs cannot be selected by another campaign. Approval activates the campaign and creates one delivery per campaign target.
 
-Until real consented customer addresses are available, every target maps to the safety inbox `temp66642@gmail.com`.
+Until real consented customer addresses are available, the `customers.email` column stores the safety inbox `temp66642@gmail.com` for every imported customer. Campaign delivery reads the recipient from that database column.
 
 - `EMAIL_MODE=log`: creates simulated delivery records without sending externally.
 - `EMAIL_MODE=smtp`: sends real messages and records sent/failed status.

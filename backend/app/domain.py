@@ -19,6 +19,7 @@ def get_customer_profile(session: Session, customer_id: int) -> dict:
         raise ValueError("Customer not found")
     return audit(session, "get_customer_profile", {"customer_id": customer_id}, {
         "id": customer.id, "external_id": customer.external_id, "country": customer.country,
+        "email": customer.email,
         "segment": customer.segment, "churn_risk": customer.churn_risk,
         "lifetime_value": float(customer.lifetime_value), "last_purchase_at": customer.last_purchase_at.isoformat() if customer.last_purchase_at else None,
     })
@@ -69,7 +70,7 @@ def get_purchase_history_by_external_id(session: Session, external_id: str, limi
     if not customer:
         raise ValueError("Customer not found")
     history = get_customer_purchase_history(session, customer.id, limit)
-    return {"customer": {"id": customer.id, "external_id": customer.external_id, "country": customer.country, "segment": customer.segment, "risk": customer.churn_risk, "lifetime_value": float(customer.lifetime_value)}, **history}
+    return {"customer": {"id": customer.id, "external_id": customer.external_id, "email": customer.email, "country": customer.country, "segment": customer.segment, "risk": customer.churn_risk, "lifetime_value": float(customer.lifetime_value)}, **history}
 
 
 def assign_customer_segment(session: Session, customer_id: int, segment: str) -> dict:
@@ -301,6 +302,7 @@ def dashboard_summary(session: Session) -> dict:
     blocked = select(CampaignTarget.customer_id).join(Campaign).where(Campaign.status.in_(["draft", "active"]))
     return {
         "customers": session.scalar(select(func.count()).select_from(Customer)) or 0,
+        "customers_with_email": session.scalar(select(func.count()).select_from(Customer).where(Customer.email.is_not(None), Customer.email != "")) or 0,
         "products": session.scalar(select(func.count()).select_from(Product)) or 0,
         "orders": session.scalar(select(func.count()).select_from(Order)) or 0,
         "high_risk_customers": session.scalar(select(func.count()).select_from(Customer).where(Customer.churn_risk >= 0.65)) or 0,
