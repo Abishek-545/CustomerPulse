@@ -1,6 +1,6 @@
 from datetime import datetime
 from decimal import Decimal
-from sqlalchemy import DateTime, ForeignKey, Integer, Numeric, String, Text, JSON
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, Numeric, String, Text, JSON
 from sqlalchemy.orm import Mapped, mapped_column
 from .db import Base
 
@@ -111,4 +111,73 @@ class AuditEvent(Base):
     tool: Mapped[str] = mapped_column(String(120))
     input_data: Mapped[dict] = mapped_column(JSON, default=dict)
     output_data: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class AgentRunStep(Base):
+    __tablename__ = "agent_run_steps"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    investigation_id: Mapped[int] = mapped_column(ForeignKey("investigations.id"), index=True)
+    sequence: Mapped[int] = mapped_column(Integer)
+    agent: Mapped[str] = mapped_column(String(100), index=True)
+    action: Mapped[str] = mapped_column(String(120))
+    tool_name: Mapped[str | None] = mapped_column(String(160))
+    status: Mapped[str] = mapped_column(String(32), default="complete")
+    reasoning: Mapped[str | None] = mapped_column(Text)
+    input_data: Mapped[dict] = mapped_column(JSON, default=dict)
+    output_data: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class OperationalTask(Base):
+    __tablename__ = "operational_tasks"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    investigation_id: Mapped[int | None] = mapped_column(ForeignKey("investigations.id"), index=True)
+    task_type: Mapped[str] = mapped_column(String(80), index=True)
+    title: Mapped[str] = mapped_column(String(250))
+    description: Mapped[str] = mapped_column(Text)
+    priority: Mapped[str] = mapped_column(String(32), default="normal")
+    status: Mapped[str] = mapped_column(String(32), default="open")
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class EmailDelivery(Base):
+    __tablename__ = "email_deliveries"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    campaign_id: Mapped[int] = mapped_column(ForeignKey("campaigns.id"), index=True)
+    campaign_target_id: Mapped[int] = mapped_column(ForeignKey("campaign_targets.id"), index=True)
+    customer_id: Mapped[int] = mapped_column(ForeignKey("customers.id"), index=True)
+    recipient: Mapped[str] = mapped_column(String(320))
+    subject: Mapped[str] = mapped_column(String(300))
+    body: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(32), default="queued", index=True)
+    provider_message_id: Mapped[str | None] = mapped_column(String(250))
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class CampaignOutcome(Base):
+    __tablename__ = "campaign_outcomes"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    campaign_id: Mapped[int] = mapped_column(ForeignKey("campaigns.id"), unique=True, index=True)
+    delivered: Mapped[int] = mapped_column(Integer, default=0)
+    opened: Mapped[int] = mapped_column(Integer, default=0)
+    clicked: Mapped[int] = mapped_column(Integer, default=0)
+    converted: Mapped[int] = mapped_column(Integer, default=0)
+    attributed_revenue: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=0)
+    control_conversion_rate: Mapped[float] = mapped_column(Float, default=0.0)
+    uplift: Mapped[float] = mapped_column(Float, default=0.0)
+    status: Mapped[str] = mapped_column(String(32), default="collecting")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class EvaluationRun(Base):
+    __tablename__ = "evaluation_runs"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(160))
+    status: Mapped[str] = mapped_column(String(32), default="complete")
+    scores: Mapped[dict] = mapped_column(JSON, default=dict)
+    details: Mapped[list] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

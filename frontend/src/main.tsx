@@ -11,7 +11,7 @@ const call = async (path: string, options?: RequestInit) => {
 };
 const money = (value: number) => new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP" }).format(value || 0);
 const pct = (value: number) => `${Math.round((value || 0) * 100)}%`;
-type Tab = "overview" | "workspace" | "customers" | "campaigns" | "guide" | "audit";
+type Tab = "overview" | "workspace" | "customers" | "campaigns" | "operations" | "quality" | "guide" | "audit";
 
 function App() {
   const [tab, setTab] = useState<Tab>("overview");
@@ -22,6 +22,9 @@ function App() {
   const [approvals, setApprovals] = useState<any[]>([]);
   const [campaigns, setCampaigns] = useState<any[]>([]);
   const [audits, setAudits] = useState<any[]>([]);
+  const [tasks, setTasks] = useState<any[]>([]);
+  const [evaluations, setEvaluations] = useState<any[]>([]);
+  const [mcpCapabilities, setMcpCapabilities] = useState<any>({});
   const [targets, setTargets] = useState<Record<number, any[]>>({});
   const [expandedCampaign, setExpandedCampaign] = useState<number | null>(null);
   const [query, setQuery] = useState("Show top 5 customers by lifetime value");
@@ -29,16 +32,20 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
+  const [managerNotice, setManagerNotice] = useState("");
 
   const refresh = async () => {
     try {
-      const [summary, customerRows, productRows, runs, gates, campaignRows, logs] = await Promise.all([
+      const [summary, customerRows, productRows, runs, gates, campaignRows, logs, taskRows, evaluationRows, capabilities] = await Promise.all([
         call("/api/dashboard"), call("/api/customers?limit=100"), call("/api/products"), call("/api/investigations"),
-        call("/api/approvals"), call("/api/campaigns"), call("/api/audit-events"),
+        call("/api/approvals"), call("/api/campaigns"), call("/api/audit-events"), call("/api/operational-tasks").catch(() => []), call("/api/evaluations").catch(() => []), call("/api/mcp/capabilities").catch(() => ({})),
       ]);
       setDashboard(summary); setCustomers(customerRows); setProducts(productRows); setInvestigations(runs);
-      setApprovals(gates); setCampaigns(campaignRows); setAudits(logs); setError("");
-    } catch { setError("The live API is unavailable. Check the Render backend deployment and refresh."); }
+      setApprovals(gates); setCampaigns(campaignRows); setAudits(logs); setTasks(taskRows); setEvaluations(evaluationRows); setMcpCapabilities(capabilities); setError("");
+    } catch (cause) {
+      const detail = cause instanceof Error ? cause.message : "Unknown connection error";
+      setError(`The live API is unavailable: ${detail}`);
+    }
   };
   useEffect(() => { refresh(); }, []);
 
@@ -53,9 +60,11 @@ function App() {
     finally { setBusy(false); }
   };
   const decide = async (id: number, approved: boolean) => {
-    try { await call(`/api/approvals/${id}/decision`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ approved, decided_by: "dashboard-manager" }) }); await refresh(); }
+    try { const result = await call(`/api/approvals/${id}/decision`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ approved, decided_by: "dashboard-manager" }) }); setManagerNotice(result.email_delivery?.manager_notification || `Campaign ${result.campaign_status}.`); await refresh(); }
     catch { setError("The approval could not be saved."); }
   };
+  const simulateOutcome = async (campaignId: number) => { try { const result = await call(`/api/campaigns/${campaignId}/simulate-outcome`, { method: "POST" }); setManagerNotice(`Campaign #${campaignId} completed: ${result.converted} conversions, ${pct(result.uplift)} uplift, ${money(result.attributed_revenue)} attributed revenue.`); await refresh(); } catch (cause) { setError(cause instanceof Error ? cause.message : "Outcome processing failed."); } };
+  const runEvaluations = async () => { try { setManagerNotice("Evaluation suite is running…"); const result = await call("/api/evaluations/run", { method: "POST" }); setManagerNotice(`Evaluation complete: ${result.scores.passed}/${result.scores.cases} cases passed.`); await refresh(); } catch { setError("The evaluation suite could not run."); } };
   const toggleTargets = async (campaignId: number) => {
     if (expandedCampaign === campaignId) return setExpandedCampaign(null);
     setExpandedCampaign(campaignId);
@@ -74,6 +83,8 @@ function App() {
         <Nav active={tab === "workspace"} onClick={() => setTab("workspace")} icon="✦">Agent workspace</Nav>
         <Nav active={tab === "customers"} onClick={() => setTab("customers")} icon="◉">Customers</Nav>
         <Nav active={tab === "campaigns"} onClick={() => setTab("campaigns")} icon="◇">Campaigns <em>{pending.length}</em></Nav>
+        <Nav active={tab === "operations"} onClick={() => setTab("operations")} icon="✓">Operations</Nav>
+        <Nav active={tab === "quality"} onClick={() => setTab("quality")} icon="◎">Quality & MCP</Nav>
         <Nav active={tab === "guide"} onClick={() => setTab("guide")} icon="?">How it works</Nav>
         <Nav active={tab === "audit"} onClick={() => setTab("audit")} icon="≡">Audit trail</Nav>
       </nav>
@@ -82,10 +93,13 @@ function App() {
     <main className="content">
       <header className="topbar"><div><p className="kicker">CUSTOMER INTELLIGENCE PLATFORM</p><h1>{tab === "overview" ? "Operations overview" : tab === "workspace" ? "Multi-agent workspace" : tab === "guide" ? "How CustomerPulse works" : tab[0].toUpperCase() + tab.slice(1)}</h1></div><button className="secondary" onClick={refresh}>↻ Refresh</button></header>
       {error && <div className="alert"><b>Action needed</b><span>{error}</span><button onClick={() => setError("")}>×</button></div>}
+      {managerNotice && <div className="manager-notice"><b>Manager notification</b><span>{managerNotice}</span><button onClick={() => setManagerNotice("")}>×</button></div>}
       {tab === "overview" && <Overview dashboard={dashboard} investigations={investigations} campaigns={campaigns} pending={pending} products={products} execute={execute} />}
       {tab === "workspace" && <Workspace query={query} setQuery={setQuery} clearResult={() => setAgentResult(null)} execute={execute} busy={busy} response={agentResult} investigations={investigations} />}
       {tab === "customers" && <Customers rows={filteredCustomers} search={search} setSearch={setSearch} execute={execute} />}
-      {tab === "campaigns" && <Campaigns dashboard={dashboard} campaigns={campaigns} approvals={approvals} targets={targets} expanded={expandedCampaign} toggle={toggleTargets} decide={decide} />}
+      {tab === "campaigns" && <Campaigns dashboard={dashboard} campaigns={campaigns} approvals={approvals} targets={targets} expanded={expandedCampaign} toggle={toggleTargets} decide={decide} simulateOutcome={simulateOutcome} />}
+      {tab === "operations" && <Operations tasks={tasks} execute={execute}/>}
+      {tab === "quality" && <Quality evaluations={evaluations} capabilities={mcpCapabilities} runEvaluations={runEvaluations}/>}
       {tab === "guide" && <Guide execute={execute}/>}
       {tab === "audit" && <Audit rows={audits} />}
     </main>
@@ -108,6 +122,8 @@ function Overview({ dashboard, investigations, campaigns, pending, products, exe
         <Quick title="Customer profile" text="Inspect risk, segment, country and value." prompt="Show customer 16244 details" execute={execute}/>
         <Quick title="Purchase history" text="Retrieve recent invoices for one customer." prompt="Show purchase history for customer 16244" execute={execute}/>
         <Quick title="Churn analysis" text="Let three agents investigate risk evidence." prompt="Analyze the top 10 customers at churn risk" execute={execute}/>
+        <Quick title="Support triage" text="Autonomously create deduplicated internal cases." prompt="Create support cases for 10 risky customers" execute={execute}/>
+        <Quick title="Product recovery" text="Find cancellation problems and create recovery tasks." prompt="Create product recovery tasks for 5 products" execute={execute}/>
         <Quick title="Explain CustomerPulse" text="Learn the metrics, agents, and safety rules." prompt="What does this app do, what do its metrics mean, and what is the role of each agent?" execute={execute}/>
       </div>
     </section>
@@ -119,7 +135,7 @@ function Overview({ dashboard, investigations, campaigns, pending, products, exe
 }
 
 function Workspace({ query, setQuery, clearResult, execute, busy, response, investigations }: any) {
-  const examples = ["What does this app do?", "Explain churn risk, lifetime value, and customer segments", "Show top 5 customers by lifetime value", "Show customer 16244 details", "Show purchase history for customer 16244", "Show customers in France", "Analyze churn risk", "Create a retention campaign for 10 high-value customers"];
+  const examples = ["What does this app do?", "Explain churn risk, lifetime value, and customer segments", "Show top 5 customers by lifetime value", "Show customer 16244 details", "Analyze churn risk", "Create a retention campaign for 10 high-value customers", "Create support cases for 10 risky customers", "Create product recovery tasks for 5 products", "Show operational tasks"];
   return <>
     <section className="command-card"><div className="command-title"><div className="agent-orb">✦</div><div><h2>Ask CustomerPulse</h2><p>Supervisor routes your request to the correct specialist agents.</p></div></div>
       <div className="command-box"><textarea value={query} onChange={event => { setQuery(event.target.value); clearResult(); }} onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); execute(); } }} placeholder="Ask what the app does, what a metric means, or ask about customers, purchases, risk and campaigns…"/><button disabled={busy} onClick={() => execute()}>{busy ? "Agents working…" : "Run request →"}</button></div>
@@ -136,11 +152,15 @@ function Result({ response }: any) {
   const customers = data.customers || [];
   return <section className="result-card"><div className="result-head"><div><span className="status-dot"></span><b>Request completed</b><p>{result.summary}</p></div><Badge value={response.intent || result.kind}/></div>
     {result.agents && <div className="agent-chain">{result.agents.map((agent: string, index: number) => <span key={agent}>{agent}{index < result.agents.length - 1 && <i>→</i>}</span>)}</div>}
+    {result.decision_log && <div className="decision-log"><b>Autonomous decisions</b>{result.decision_log.map((item: any, index: number) => <p key={index}><span>{item.decision}</span>{item.rationale}</p>)}</div>}
     {customers.length > 0 && <CustomerTable rows={customers}/>}
     {result.kind === "customer_detail" && <Profile data={data}/>}
     {result.kind === "purchase_history" && <><Profile data={data.customer}/><OrderTable rows={data.orders || []}/></>}
     {result.kind === "help" && <HelpResult data={data}/>}
     {result.kind === "campaign" && <div className="campaign-result"><strong>{result.created ? result.target_count : 0}</strong><span>{result.created ? "unique customers selected" : "campaigns created"}</span>{result.created && <><b>{result.excluded_existing_targets} duplicate targets excluded</b><p>Campaign #{result.campaign_id} is a draft awaiting human approval.</p></>}</div>}
+    {(result.kind === "support_triage" || result.kind === "product_recovery") && <div className="action-result"><strong>{data.created_count || 0}</strong><span>{result.kind === "support_triage" ? "support cases created" : "product recovery tasks created"}</span><p>{data.duplicates_skipped ? `${data.duplicates_skipped} duplicate open records were skipped.` : "Every created record is visible in Operations."}</p></div>}
+    {result.kind === "operational_tasks" && <TaskList rows={data.tasks || []}/>}
+    {result.kind === "campaign_outcome" && <Outcome data={data}/>}
   </section>;
 }
 
@@ -151,23 +171,47 @@ function Customers({ rows, search, setSearch, execute }: any) {
   </Card>;
 }
 
-function Campaigns({ dashboard, campaigns, approvals, targets, expanded, toggle, decide }: any) {
+function Campaigns({ dashboard, campaigns, approvals, targets, expanded, toggle, decide, simulateOutcome }: any) {
   const approvalFor = (id: number) => approvals.find((item: any) => item.campaign_id === id);
   return <div className="campaign-list"><section className="capacity-card"><div><span>Eligible customers remaining</span><strong>{dashboard?.eligible_retention_customers ?? "—"}</strong></div><div><span>Customers protected from duplicate targeting</span><strong>{dashboard?.currently_targeted_customers ?? "—"}</strong></div><p>Draft and active campaigns reserve their exact customers. When no eligible customers remain, the agent returns a safe “no campaign created” result instead of selecting the same people again.</p></section>{campaigns.length === 0 && <Card title="No campaigns yet"><p className="muted">Explicitly request a campaign from the Agent workspace.</p></Card>}{campaigns.map((campaign: any) => { const approval = approvalFor(campaign.id); const rows = targets[campaign.id] || []; return <section className="campaign-card" key={campaign.id}>
-    <div className="campaign-main"><div><div className="campaign-title"><span>Campaign #{campaign.id}</span><Badge value={campaign.status}/></div><h2>{campaign.name}</h2><p>{campaign.offer} · Segment: {campaign.segment}</p></div><div className="target-total"><strong>{campaign.target_count}</strong><span>target customers</span></div></div>
-    <div className="campaign-actions"><button className="secondary" onClick={() => toggle(campaign.id)}>{expanded === campaign.id ? "Hide customers" : `View ${campaign.target_count} customers`}</button>{approval?.status === "pending" && <><button className="approve" onClick={() => decide(approval.id, true)}>Approve campaign</button><button className="reject" onClick={() => decide(approval.id, false)}>Reject</button></>} {approval && approval.status !== "pending" && <span className="decision">Decision: <b>{approval.status}</b>{approval.decided_by ? ` by ${approval.decided_by}` : ""}</span>}</div>
+    <div className="campaign-main"><div><div className="campaign-title"><span>Campaign #{campaign.id}</span><Badge value={campaign.status}/></div><h2>{campaign.name}</h2><p>{campaign.offer} · Customer group: {friendlySegment(campaign.segment)}</p></div><div className="target-total"><strong>{campaign.target_count}</strong><span>target customers</span></div></div>
+    {(campaign.delivery?.sent > 0 || campaign.delivery?.simulated > 0 || campaign.delivery?.failed > 0) && <div className="delivery-strip"><b>Email delivery</b><span>{campaign.delivery.sent} sent</span><span>{campaign.delivery.simulated} simulated</span><span className={campaign.delivery.failed ? "danger" : ""}>{campaign.delivery.failed} failed</span></div>}
+    {campaign.outcome && <Outcome data={campaign.outcome}/>}
+    <div className="campaign-actions"><button className="secondary" onClick={() => toggle(campaign.id)}>{expanded === campaign.id ? "Hide customers" : `View ${campaign.target_count} customers`}</button>{approval?.status === "pending" && <><button className="approve" onClick={() => decide(approval.id, true)}>Approve & send emails</button><button className="reject" onClick={() => decide(approval.id, false)}>Reject</button></>} {campaign.status === "active" && <button className="approve" onClick={() => simulateOutcome(campaign.id)}>Complete & measure outcome</button>} {approval && approval.status !== "pending" && <span className="decision">Decision: <b>{approval.status}</b>{approval.decided_by ? ` by ${approval.decided_by}` : ""}</span>}</div>
     {expanded === campaign.id && <div className="target-panel">{campaign.target_count === 0 ? <p className="muted">Legacy segment-level campaign: no individual targets were recorded.</p> : rows.length === 0 ? <p className="muted">Loading targets…</p> : <CustomerTable rows={rows}/>}</div>}
   </section>; })}</div>;
 }
 
+function Operations({ tasks, execute }: any) { return <div className="operations-page">
+  <section className="ops-hero"><div><p className="kicker">MORE THAN DISCOUNTS</p><h2>Autonomous customer and product operations</h2><p>The supervisor can investigate evidence, create deduplicated support cases, open product-recovery tasks, or prepare a human-approved retention campaign. It observes each tool result before deciding whether the next action is justified.</p></div><div className="ops-actions"><button onClick={() => execute("Create support cases for 10 risky customers")}>Run support triage</button><button onClick={() => execute("Create product recovery tasks for 5 products")}>Run product recovery</button></div></section>
+  <Card title="Operations backlog" eyebrow="AGENT-CREATED INTERNAL CRUD"><TaskList rows={tasks}/></Card>
+</div>; }
+
+function Quality({ evaluations, capabilities, runEvaluations }: any) {
+  const latest = evaluations[0]; const servers = Object.entries(capabilities || {});
+  return <div className="quality-page">
+    <section className="quality-hero"><div><p className="kicker">CONTINUOUS QUALITY</p><h2>Agent evaluation and real MCP capability discovery</h2><p>Regression cases measure intent, parameter extraction, unsafe-action prevention, and expected trajectories. MCP cards below come from live protocol discovery—not a hard-coded UI list.</p></div><button onClick={runEvaluations}>Run 40-case evaluation →</button></section>
+    {latest ? <section className="score-grid"><Score label="Intent accuracy" value={latest.scores.intent_accuracy}/><Score label="Parameter accuracy" value={latest.scores.parameter_accuracy}/><Score label="Unsafe-action prevention" value={latest.scores.unsafe_action_prevention}/><Score label="Trajectory validity" value={latest.scores.trajectory_validity}/><article><span>Cases passed</span><strong>{latest.scores.passed}/{latest.scores.cases}</strong></article></section> : <Card title="No evaluation run yet"><p className="muted">Run the versioned regression suite to create a measurable quality baseline.</p></Card>}
+    <section className="mcp-grid">{servers.map(([name, value]: any) => <article key={name}><div><b>{name} MCP server</b><Badge value={value.transport}/></div><p>{value.tools?.length || 0} tools · {value.resources?.length || 0} resources · {value.prompts?.length || 0} prompts</p><small>{(value.tools || []).join(" · ")}</small></article>)}</section>
+    {latest && <Card title="Latest evaluation cases" eyebrow="TRAJECTORY REGRESSION"><div className="eval-cases">{latest.details.slice(0, 40).map((item: any) => <article key={item.prompt}><span className={item.intent_ok && item.parameter_ok && item.safety_ok ? "pass" : "fail"}></span><div><b>{item.prompt}</b><small>{item.actual_intent} · {(item.actions || []).join(" → ")}</small></div></article>)}</div></Card>}
+  </div>;
+}
+
+function TaskList({ rows }: any) { return <div className="task-list">{rows.length === 0 && <p className="muted">No operational tasks yet.</p>}{rows.map((item: any) => <article key={item.id}><div><Badge value={item.priority}/><b>{item.title}</b></div><p>{item.description}</p><span>#{item.id} · {item.type} · {item.status}</span></article>)}</div>; }
+function Outcome({ data }: any) { return <div className="outcome-strip"><div><span>Delivered</span><b>{data.delivered || 0}</b></div><div><span>Opened</span><b>{data.opened || 0}</b></div><div><span>Clicked</span><b>{data.clicked || 0}</b></div><div><span>Converted</span><b>{data.converted || 0}</b></div><div><span>Uplift</span><b>{pct(data.uplift)}</b></div><div><span>Revenue</span><b>{money(data.revenue ?? data.attributed_revenue)}</b></div></div>; }
+function Score({ label, value }: any) { return <article><span>{label}</span><strong>{pct(value)}</strong><i style={{width:pct(value)}}></i></article>; }
+
 function Guide({ execute }: any) {
   const agents = [
-    ["Supervisor", "Understands the request, chooses a safe intent, and routes work to specialists."],
+    ["Supervisor & Planner", "Understands the goal, creates a constrained plan, and chooses the smallest set of specialists."],
     ["Customer Intelligence", "Queries customer profiles, purchases, locations, spend, and inactivity risk through MCP tools."],
     ["Product Intelligence", "Checks product returns, cancellations, and demand signals when they are relevant."],
     ["Memory", "Retrieves prior campaign outcomes and stores useful lessons for later runs."],
     ["Campaign & Safety", "Selects unique eligible customers, creates a draft, and pauses for human approval."],
-    ["Response", "Combines the agents' evidence into one clear result with an auditable execution chain."],
+    ["Customer Care", "Creates deduplicated internal support cases when the user explicitly requests proactive triage."],
+    ["Product Operations", "Creates recovery tasks for products whose cancellation evidence justifies action."],
+    ["Observer & Replanner", "Checks every tool result, removes unjustified dependent actions, and enforces the step limit."],
+    ["Response & Learning", "Combines evidence into one result and writes completed campaign outcomes into memory."],
   ];
   return <div className="guide-page">
     <section className="guide-hero"><p className="kicker">PLAIN-ENGLISH PRODUCT GUIDE</p><h2>CustomerPulse finds retention opportunities without silently acting on customers</h2><p>It analyzes real PostgreSQL customer and invoice records, lets specialist agents answer operational questions, and creates customer-specific retention drafts only when you explicitly request a campaign.</p><button onClick={() => execute("Explain what this app does, its metrics, campaign rules, and every agent role")}>Ask the agents to explain it →</button></section>
@@ -176,7 +220,7 @@ function Guide({ execute }: any) {
       <Definition title="Likelihood of not returning" technical="Churn risk" text="A 0–95% rule-based inactivity score: up to 70% from time since the last purchase, plus 25% for a one-time buyer. It is an explainable warning, not a guaranteed prediction."/>
       <Definition title="Customer group" technical="Segment" text="A business label derived from value and risk. ‘High-value customer at risk’ means the customer has spent relatively more and also shows strong inactivity signals."/>
     </div></section>
-    <section className="card"><div className="card-head"><div><p className="kicker">MULTI-AGENT ARCHITECTURE</p><h2>Why several agents are used</h2></div></div><p className="table-explainer">Each agent owns a narrow responsibility and MCP tool set. The LangGraph supervisor coordinates them, shares evidence through graph state, and preserves checkpoints so the workflow is observable instead of one opaque LLM call.</p><div className="agent-role-list">{agents.map(([name, text]) => <article key={name}><b>{name}</b><p>{text}</p></article>)}</div></section>
+    <section className="card"><div className="card-head"><div><p className="kicker">AUTONOMOUS MULTI-AGENT ARCHITECTURE</p><h2>Plan → execute → observe → replan</h2></div></div><p className="table-explainer">Each specialist owns a narrow responsibility and MCP tool set. The LangGraph planner creates a goal-specific plan, agents share evidence through durable PostgreSQL graph state, and the observer decides after every tool result whether to continue, revise, or stop.</p><div className="agent-role-list">{agents.map(([name, text]) => <article key={name}><b>{name}</b><p>{text}</p></article>)}</div></section>
     <section className="policy-note"><b>What happens when campaign customers run out?</b><p>Every draft or active campaign reserves exact customer IDs, so a later campaign cannot target them again. With a static dataset, the eligible count eventually reaches zero and no campaign is created. Importing newer purchases, completing campaigns, or changing eligibility policy can replenish the pool.</p></section>
   </div>;
 }

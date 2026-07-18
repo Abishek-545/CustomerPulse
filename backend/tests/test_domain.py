@@ -1,9 +1,11 @@
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from app.db import Base
-from app.domain import create_campaign_draft, dashboard_summary, decide_campaign_approval, explain_platform, find_churn_risk_customers, find_eligible_retention_customers, request_campaign_approval
-from app.models import CampaignTarget, Customer
+from app.domain import create_campaign_draft, create_support_cases_for_customers, dashboard_summary, decide_campaign_approval, explain_platform, find_churn_risk_customers, find_eligible_retention_customers, list_operational_tasks, request_campaign_approval, simulate_campaign_outcome
+from app.evaluations import run_offline_evaluations
+from app.models import CampaignTarget, Customer, EmailDelivery, Memory
 from app.reasoner import route_goal
+from app.config import settings
 
 
 def test_campaign_requires_approval_before_activation():
@@ -28,6 +30,9 @@ def test_read_only_customer_query_never_routes_to_campaign():
     assert route_goal("What is the role of multi agent here?").intent == "help"
     assert route_goal("What does lifetime value mean?").intent == "help"
     assert route_goal("What is segment?").intent == "help"
+    assert route_goal("Create support cases for 6 risky customers").intent == "support_triage"
+    assert route_goal("Create product recovery tasks for 5 products").intent == "product_recovery"
+    assert route_goal("Campaign 12 conversion result").campaign_id == 12
 
 
 def test_campaign_targets_are_saved_and_not_retargeted():
@@ -60,3 +65,46 @@ def test_platform_help_explains_metrics_agents_and_campaign_capacity():
     assert {item["term"] for item in result["definitions"]} == {"Lifetime value (LTV)", "Churn risk", "Customer segment"}
     assert any(item["name"] == "Supervisor" for item in result["agents"])
     assert "eligible pool reaches zero" in result["campaign_policy"]
+
+
+def test_support_cases_are_visible_in_operations_backlog():
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine)()
+    customer = Customer(external_id="support-101", country="UK", segment="active", churn_risk=0.8, lifetime_value=90)
+    session.add(customer)
+    session.commit()
+    create_support_cases_for_customers(session, [customer.id], "Proactive churn-risk review")
+    tasks = list_operational_tasks(session)["tasks"]
+    assert len(tasks) == 1
+    assert tasks[0]["type"] == "support_followup"
+    assert tasks[0]["payload"]["customer_external_id"] == "support-101"
+
+
+def test_approval_creates_idempotent_demo_email_and_outcome_learning():
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine)()
+    settings.email_mode = "log"
+    customer = Customer(external_id="email-demo", country="UK", segment="at_risk_high_value", churn_risk=0.9, lifetime_value=500)
+    session.add(customer)
+    session.commit()
+    draft = create_campaign_draft(session, "Email campaign", "at_risk_high_value", "10% discount", customer_ids=[customer.id])
+    approval = request_campaign_approval(session, draft["campaign_id"], "Manager gate")
+    decision = decide_campaign_approval(session, approval["approval_id"], True, "tester")
+    assert decision["email_delivery"]["simulated"] == 1
+    assert session.query(EmailDelivery).one().recipient == "temp66642@gmail.com"
+    outcome = simulate_campaign_outcome(session, draft["campaign_id"])
+    assert outcome["delivered"] == 1
+    assert outcome["status"] == "complete"
+    assert session.query(Memory).filter_by(category="campaign_outcome").count() == 1
+
+
+def test_40_case_agent_evaluation_suite_is_green():
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine)()
+    result = run_offline_evaluations(session)
+    assert result["scores"]["cases"] == 40
+    assert result["scores"]["intent_accuracy"] == 1.0
+    assert result["scores"]["unsafe_action_prevention"] == 1.0

@@ -1,5 +1,6 @@
-from contextlib import asynccontextmanager
-from fastapi import Depends, FastAPI, HTTPException
+from contextlib import AsyncExitStack, asynccontextmanager
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
@@ -8,8 +9,14 @@ from .db import Base, engine, get_session
 from .seed import seed
 from .graph import run_investigation
 from . import domain
-from .models import ApprovalRequest, AuditEvent, Campaign, CampaignTarget, Customer, Investigation, Product
+from .models import AgentRunStep, ApprovalRequest, AuditEvent, Campaign, CampaignOutcome, CampaignTarget, Customer, EmailDelivery, EvaluationRun, Investigation, OperationalTask, Product
 from .config import settings
+from .mcp_client import mcp_client
+from .mcp_servers import SERVERS
+from .evaluations import list_evaluation_runs, run_offline_evaluations
+
+
+MCP_SERVERS = {name: factory() for name, factory in SERVERS.items()}
 
 
 @asynccontextmanager
@@ -17,11 +24,24 @@ async def lifespan(_: FastAPI):
     Base.metadata.create_all(engine)
     with next(get_session()) as session:
         seed(session)
-    yield
+    async with AsyncExitStack() as stack:
+        for server in MCP_SERVERS.values():
+            await stack.enter_async_context(server.session_manager.run())
+        yield
 
 
 app = FastAPI(title="CustomerPulse API", version="1.0.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=settings.backend_cors_origins.split(","), allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+for server_name, server in MCP_SERVERS.items():
+    app.mount(f"/mcp/{server_name}", server.streamable_http_app())
+
+
+@app.middleware("http")
+async def protect_internal_mcp(request: Request, call_next):
+    if request.url.path.startswith("/mcp/") and settings.mcp_internal_token:
+        if request.headers.get("authorization") != f"Bearer {settings.mcp_internal_token}":
+            return JSONResponse(status_code=401, content={"detail": "Invalid MCP service token"})
+    return await call_next(request)
 
 
 class InvestigationRequest(BaseModel):
@@ -110,10 +130,23 @@ def decide_approval(approval_id: int, payload: ApprovalDecision, session: Sessio
         raise HTTPException(status_code=404, detail=str(error)) from error
 
 
+@app.get("/api/mcp/capabilities")
+def mcp_capabilities():
+    try:
+        return mcp_client.discover()
+    except Exception as error:
+        raise HTTPException(status_code=503, detail=f"MCP discovery failed: {error}") from error
+
+
 @app.get("/api/campaigns")
 def campaigns(session: Session = Depends(get_session)):
     rows = session.scalars(select(Campaign).order_by(Campaign.id.desc())).all()
-    return [{"id": item.id, "name": item.name, "segment": item.segment, "offer": item.offer, "status": item.status, "investigation_id": item.investigation_id, "target_count": session.scalar(select(func.count()).select_from(CampaignTarget).where(CampaignTarget.campaign_id == item.id)) or 0} for item in rows]
+    result = []
+    for item in rows:
+        outcome = session.scalar(select(CampaignOutcome).where(CampaignOutcome.campaign_id == item.id))
+        delivery_counts = dict(session.execute(select(EmailDelivery.status, func.count()).where(EmailDelivery.campaign_id == item.id).group_by(EmailDelivery.status)).all())
+        result.append({"id": item.id, "name": item.name, "segment": item.segment, "offer": item.offer, "status": item.status, "investigation_id": item.investigation_id, "target_count": session.scalar(select(func.count()).select_from(CampaignTarget).where(CampaignTarget.campaign_id == item.id)) or 0, "delivery": {"sent": delivery_counts.get("sent", 0), "simulated": delivery_counts.get("simulated", 0), "failed": delivery_counts.get("failed", 0)}, "outcome": None if not outcome else {"delivered": outcome.delivered, "opened": outcome.opened, "clicked": outcome.clicked, "converted": outcome.converted, "revenue": float(outcome.attributed_revenue), "uplift": outcome.uplift, "status": outcome.status}})
+    return result
 
 
 @app.get("/api/campaigns/{campaign_id}/targets")
@@ -122,7 +155,41 @@ def campaign_targets(campaign_id: int, session: Session = Depends(get_session)):
     return [{"customer_id": customer.id, "external_id": customer.external_id, "segment": customer.segment, "risk": customer.churn_risk, "lifetime_value": float(customer.lifetime_value), "target_status": target.status} for target, customer in rows]
 
 
+@app.get("/api/campaigns/{campaign_id}/deliveries")
+def campaign_deliveries(campaign_id: int, session: Session = Depends(get_session)):
+    return domain.campaign_delivery_status(session, campaign_id)
+
+
+@app.post("/api/campaigns/{campaign_id}/simulate-outcome")
+def campaign_simulate_outcome(campaign_id: int, session: Session = Depends(get_session)):
+    try:
+        return domain.simulate_campaign_outcome(session, campaign_id)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@app.get("/api/operational-tasks")
+def operational_tasks(session: Session = Depends(get_session)):
+    return domain.list_operational_tasks(session, 100)["tasks"]
+
+
+@app.get("/api/investigations/{investigation_id}/steps")
+def investigation_steps(investigation_id: int, session: Session = Depends(get_session)):
+    rows = session.scalars(select(AgentRunStep).where(AgentRunStep.investigation_id == investigation_id).order_by(AgentRunStep.sequence)).all()
+    return [{"id": row.id, "sequence": row.sequence, "agent": row.agent, "action": row.action, "tool": row.tool_name, "status": row.status, "reasoning": row.reasoning, "input": row.input_data, "output": row.output_data, "created_at": row.created_at} for row in rows]
+
+
 @app.get("/api/audit-events")
 def audit_events(session: Session = Depends(get_session)):
     rows = session.scalars(select(AuditEvent).order_by(AuditEvent.id.desc()).limit(100)).all()
     return [{"id": item.id, "tool": item.tool, "input": item.input_data, "output": item.output_data, "created_at": item.created_at} for item in rows]
+
+
+@app.get("/api/evaluations")
+def evaluations(session: Session = Depends(get_session)):
+    return list_evaluation_runs(session)
+
+
+@app.post("/api/evaluations/run")
+def run_evaluation_suite(session: Session = Depends(get_session)):
+    return run_offline_evaluations(session)

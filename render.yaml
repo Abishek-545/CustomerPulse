@@ -10,6 +10,30 @@ services:
         sync: false
       - key: BACKEND_CORS_ORIGINS
         sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: MCP_TRANSPORT
+        value: streamable-http
+      - key: MCP_BASE_URL
+        value: https://customerpulse-api-jhsk.onrender.com
+      - key: CHECKPOINT_BACKEND
+        value: postgres
+      - key: MAX_AGENT_STEPS
+        value: 8
+      - key: EMAIL_MODE
+        value: log
+      - key: DEMO_RECIPIENT_EMAIL
+        value: temp66642@gmail.com
+      - key: SMTP_HOST
+        value: smtp.gmail.com
+      - key: SMTP_PORT
+        value: 587
+      - key: SMTP_USERNAME
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+      - key: SMTP_FROM_EMAIL
+        sync: false
   - type: web
     name: customerpulse-ui
     runtime: docker

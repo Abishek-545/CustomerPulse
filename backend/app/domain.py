@@ -1,8 +1,10 @@
 """Typed business operations. These are the only database functions exposed to agents."""
 from datetime import datetime
+from decimal import Decimal
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
-from .models import ApprovalRequest, AuditEvent, Campaign, CampaignTarget, Customer, Investigation, Memory, Order, Product, SupportCase
+from .email_service import deliver_campaign_emails, delivery_summary
+from .models import AgentRunStep, ApprovalRequest, AuditEvent, Campaign, CampaignOutcome, CampaignTarget, Customer, EmailDelivery, Investigation, Memory, OperationalTask, Order, Product, SupportCase
 
 
 def audit(session: Session, tool: str, inputs: dict, output: dict, investigation_id: int | None = None) -> dict:
@@ -94,6 +96,9 @@ def find_high_cancellation_products(session: Session, threshold: float = 0.10, l
 
 def create_campaign_draft(session: Session, name: str, segment: str, offer: str, investigation_id: int | None = None, customer_ids: list[int] | None = None) -> dict:
     selected = customer_ids or []
+    if selected:
+        # Serialize competing campaign writers for the selected customers.
+        session.scalars(select(Customer.id).where(Customer.id.in_(selected)).with_for_update()).all()
     already_targeted = set(session.scalars(select(CampaignTarget.customer_id).join(Campaign).where(Campaign.status.in_(["draft", "active"]))).all())
     eligible = list(dict.fromkeys(customer_id for customer_id in selected if customer_id not in already_targeted))
     if selected and not eligible:
@@ -128,7 +133,8 @@ def decide_campaign_approval(session: Session, approval_id: int, approved: bool,
     for target in session.scalars(select(CampaignTarget).where(CampaignTarget.campaign_id == campaign.id)).all():
         target.status = target_status
     session.commit()
-    return audit(session, "decide_campaign_approval", {"approval_id": approval_id, "approved": approved}, {"campaign_id": campaign.id, "campaign_status": campaign.status})
+    email_result = deliver_campaign_emails(session, campaign.id) if approved else None
+    return audit(session, "decide_campaign_approval", {"approval_id": approval_id, "approved": approved}, {"campaign_id": campaign.id, "campaign_status": campaign.status, "email_delivery": email_result})
 
 
 def create_support_case(session: Session, customer_id: int, title: str, priority: str = "normal") -> dict:
@@ -136,6 +142,112 @@ def create_support_case(session: Session, customer_id: int, title: str, priority
     session.add(case)
     session.commit()
     return audit(session, "create_support_case", {"customer_id": customer_id, "title": title}, {"case_id": case.id, "status": case.status})
+
+
+def create_support_cases_for_customers(session: Session, customer_ids: list[int], title: str, priority: str = "high", investigation_id: int | None = None) -> dict:
+    unique_ids = list(dict.fromkeys(customer_ids))
+    created = []
+    for customer_id in unique_ids:
+        existing = session.scalar(select(SupportCase).where(SupportCase.customer_id == customer_id, SupportCase.title == title, SupportCase.status == "open"))
+        if existing:
+            continue
+        case = SupportCase(customer_id=customer_id, title=title, priority=priority)
+        session.add(case)
+        session.flush()
+        created.append(case.id)
+    session.commit()
+    return audit(session, "create_support_cases_for_customers", {"customer_ids": unique_ids, "title": title, "priority": priority}, {"created_count": len(created), "case_ids": created, "duplicates_skipped": len(unique_ids) - len(created)}, investigation_id)
+
+
+def create_product_recovery_tasks(session: Session, product_ids: list[int], investigation_id: int | None = None) -> dict:
+    created = []
+    for product_id in list(dict.fromkeys(product_ids)):
+        product = session.get(Product, product_id)
+        if not product:
+            continue
+        existing = session.scalar(select(OperationalTask).where(OperationalTask.task_type == "product_recovery", OperationalTask.status == "open", OperationalTask.payload["product_id"].as_integer() == product_id))
+        if existing:
+            continue
+        task = OperationalTask(
+            investigation_id=investigation_id,
+            task_type="product_recovery",
+            title=f"Investigate cancellations for {product.name}",
+            description=f"Cancellation rate is {product.cancellation_rate:.0%}. Review product quality, description, pricing, and fulfillment evidence.",
+            priority="high" if product.cancellation_rate >= 0.25 else "normal",
+            payload={"product_id": product.id, "sku": product.external_sku, "cancellation_rate": product.cancellation_rate},
+        )
+        session.add(task)
+        session.flush()
+        created.append(task.id)
+    session.commit()
+    return audit(session, "create_product_recovery_tasks", {"product_ids": product_ids}, {"created_count": len(created), "task_ids": created}, investigation_id)
+
+
+def list_operational_tasks(session: Session, limit: int = 50) -> dict:
+    rows = session.scalars(select(OperationalTask).order_by(OperationalTask.created_at.desc()).limit(limit)).all()
+    tasks = [{"id": f"task-{row.id}", "type": row.task_type, "title": row.title, "description": row.description, "priority": row.priority, "status": row.status, "payload": row.payload, "created_at": row.created_at.isoformat()} for row in rows]
+    support_rows = session.execute(
+        select(SupportCase, Customer.external_id)
+        .join(Customer, Customer.id == SupportCase.customer_id)
+        .order_by(SupportCase.created_at.desc())
+        .limit(limit)
+    ).all()
+    tasks.extend({
+        "id": f"support-{case.id}",
+        "type": "support_followup",
+        "title": case.title,
+        "description": f"Review customer {external_id}'s inactivity evidence and complete a non-promotional support follow-up.",
+        "priority": case.priority,
+        "status": case.status,
+        "payload": {"support_case_id": case.id, "customer_id": case.customer_id, "customer_external_id": external_id},
+        "created_at": case.created_at.isoformat(),
+    } for case, external_id in support_rows)
+    tasks.sort(key=lambda item: item["created_at"], reverse=True)
+    return {"tasks": tasks[:limit]}
+
+
+def campaign_delivery_status(session: Session, campaign_id: int) -> dict:
+    return delivery_summary(session, campaign_id)
+
+
+def simulate_campaign_outcome(session: Session, campaign_id: int) -> dict:
+    campaign = session.get(Campaign, campaign_id)
+    if not campaign or campaign.status not in ("active", "completed"):
+        raise ValueError("Only an active campaign can collect outcomes")
+    delivered = session.scalar(select(func.count()).select_from(EmailDelivery).where(EmailDelivery.campaign_id == campaign_id, EmailDelivery.status.in_(["sent", "simulated"]))) or 0
+    opened = round(delivered * 0.70)
+    clicked = round(delivered * 0.40)
+    converted = round(delivered * 0.20)
+    conversion_rate = converted / delivered if delivered else 0.0
+    control_rate = 0.08
+    outcome = session.scalar(select(CampaignOutcome).where(CampaignOutcome.campaign_id == campaign_id))
+    if outcome and outcome.status == "complete":
+        conversion_rate = outcome.converted / outcome.delivered if outcome.delivered else 0.0
+        return {"campaign_id": campaign_id, "delivered": outcome.delivered, "opened": outcome.opened, "clicked": outcome.clicked, "converted": outcome.converted, "conversion_rate": conversion_rate, "control_conversion_rate": outcome.control_conversion_rate, "uplift": outcome.uplift, "attributed_revenue": float(outcome.attributed_revenue), "status": outcome.status, "idempotent": True}
+    if not outcome:
+        outcome = CampaignOutcome(campaign_id=campaign_id)
+        session.add(outcome)
+    outcome.delivered, outcome.opened, outcome.clicked, outcome.converted = delivered, opened, clicked, converted
+    outcome.attributed_revenue = Decimal(str(converted * 25))
+    outcome.control_conversion_rate = control_rate
+    outcome.uplift = conversion_rate - control_rate
+    outcome.status = "complete"
+    outcome.updated_at = datetime.utcnow()
+    campaign.status = "completed"
+    for target in session.scalars(select(CampaignTarget).where(CampaignTarget.campaign_id == campaign_id)).all():
+        target.status = "completed"
+    learning = Memory(category="campaign_outcome", content=f"Campaign {campaign_id} used {campaign.offer}; conversion was {conversion_rate:.0%}, control was {control_rate:.0%}, uplift was {outcome.uplift:.0%}.", confidence=0.9)
+    session.add(learning)
+    session.commit()
+    result = {"campaign_id": campaign_id, "delivered": delivered, "opened": opened, "clicked": clicked, "converted": converted, "conversion_rate": conversion_rate, "control_conversion_rate": control_rate, "uplift": outcome.uplift, "attributed_revenue": float(outcome.attributed_revenue), "status": outcome.status, "memory_id": learning.id}
+    return audit(session, "simulate_campaign_outcome", {"campaign_id": campaign_id}, result)
+
+
+def record_agent_step(session: Session, investigation_id: int, sequence: int, agent: str, action: str, tool_name: str | None, reasoning: str, inputs: dict, output: dict, status: str = "complete") -> dict:
+    row = AgentRunStep(investigation_id=investigation_id, sequence=sequence, agent=agent, action=action, tool_name=tool_name, reasoning=reasoning, input_data=inputs, output_data=output, status=status)
+    session.add(row)
+    session.commit()
+    return {"step_id": row.id}
 
 
 def search_memories(session: Session, query: str, limit: int = 5) -> dict:
@@ -196,4 +308,8 @@ def dashboard_summary(session: Session) -> dict:
         "eligible_retention_customers": session.scalar(select(func.count()).select_from(Customer).where(Customer.segment == "at_risk_high_value", ~Customer.id.in_(blocked))) or 0,
         "currently_targeted_customers": session.scalar(select(func.count(func.distinct(CampaignTarget.customer_id))).join(Campaign).where(Campaign.status.in_(["draft", "active"]))) or 0,
         "pending_approvals": session.scalar(select(func.count()).select_from(ApprovalRequest).where(ApprovalRequest.status == "pending")) or 0,
+        "emails_sent": session.scalar(select(func.count()).select_from(EmailDelivery).where(EmailDelivery.status == "sent")) or 0,
+        "emails_simulated": session.scalar(select(func.count()).select_from(EmailDelivery).where(EmailDelivery.status == "simulated")) or 0,
+        "open_operational_tasks": session.scalar(select(func.count()).select_from(OperationalTask).where(OperationalTask.status == "open")) or 0,
+        "completed_campaigns": session.scalar(select(func.count()).select_from(Campaign).where(Campaign.status == "completed")) or 0,
     }

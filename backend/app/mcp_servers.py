@@ -91,7 +91,7 @@ def campaign_server() -> FastMCP:
 
     @mcp.resource("campaign://approval-policy")
     def approval_policy() -> str:
-        return "All campaigns begin as drafts. Only an approved campaign may become active. No external communications are sent by this demo."
+        return "All campaigns begin as drafts. Only an approved campaign may become active and trigger email delivery. Demo recipients are overridden to one configured safety inbox."
 
     @mcp.prompt()
     def create_retention_campaign() -> str:
@@ -106,6 +106,16 @@ def campaign_server() -> FastMCP:
     def request_campaign_approval(campaign_id: int, reason: str) -> dict:
         with SessionLocal() as session:
             return domain.request_campaign_approval(session, campaign_id, reason)
+
+    @mcp.tool()
+    def campaign_delivery_status(campaign_id: int) -> dict:
+        with SessionLocal() as session:
+            return domain.campaign_delivery_status(session, campaign_id)
+
+    @mcp.tool()
+    def simulate_campaign_outcome(campaign_id: int) -> dict:
+        with SessionLocal() as session:
+            return domain.simulate_campaign_outcome(session, campaign_id)
     return mcp
 
 
@@ -146,7 +156,36 @@ def knowledge_server() -> FastMCP:
     return mcp
 
 
-SERVERS = {"customer": customer_server, "product": product_server, "campaign": campaign_server, "memory": memory_server, "knowledge": knowledge_server}
+def operations_server() -> FastMCP:
+    mcp = FastMCP("customerpulse-operations")
+
+    @mcp.resource("operations://action-policy")
+    def action_policy() -> str:
+        return "Support cases and product recovery tasks are internal reversible records. Customer communications require a manager-approved campaign."
+
+    @mcp.prompt()
+    def plan_customer_operations(goal: str) -> str:
+        return f"Plan the smallest safe set of internal operational actions for: {goal}. Observe every result and replan when evidence is insufficient."
+
+    @mcp.tool()
+    def create_support_cases_for_customers(customer_ids: list[int], title: str, priority: str = "high", investigation_id: int | None = None) -> dict:
+        with SessionLocal() as session:
+            return domain.create_support_cases_for_customers(session, customer_ids, title, priority, investigation_id)
+
+    @mcp.tool()
+    def create_product_recovery_tasks(product_ids: list[int], investigation_id: int | None = None) -> dict:
+        with SessionLocal() as session:
+            return domain.create_product_recovery_tasks(session, product_ids, investigation_id)
+
+    @mcp.tool()
+    def list_operational_tasks(limit: int = 50) -> dict:
+        with SessionLocal() as session:
+            return domain.list_operational_tasks(session, limit)
+    return mcp
+
+
+SERVERS = {"customer": customer_server, "product": product_server, "campaign": campaign_server, "memory": memory_server, "knowledge": knowledge_server, "operations": operations_server}
 if __name__ == "__main__":
     selected = sys.argv[1] if len(sys.argv) > 1 else "customer"
-    SERVERS[selected]().run()
+    transport = sys.argv[2] if len(sys.argv) > 2 else "stdio"
+    SERVERS[selected]().run(transport=transport)
