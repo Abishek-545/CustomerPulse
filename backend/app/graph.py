@@ -31,6 +31,7 @@ class AgentState(TypedDict, total=False):
 def supervisor_agent(state: AgentState) -> AgentState:
     route = route_goal(state["goal"])
     plans = {
+        "help": ["Supervisor identifies an onboarding question", "Knowledge Agent reads the MCP platform guide", "Response Agent explains the product in plain English"],
         "top_customers": ["Supervisor routes read-only request", "Customer Intelligence Agent ranks lifetime value", "Response Agent formats evidence"],
         "customer_detail": ["Supervisor extracts customer ID", "Customer Intelligence Agent retrieves profile", "Response Agent explains metrics"],
         "purchase_history": ["Supervisor extracts customer ID", "Customer Intelligence Agent retrieves orders", "Response Agent formats purchase history"],
@@ -46,8 +47,17 @@ def supervisor_agent(state: AgentState) -> AgentState:
     return {"intent": route.intent, "params": route.model_dump(), "plan": plan, "observations": {}, "findings": [f"Supervisor: {route.rationale}"]}
 
 
+def knowledge_agent(state: AgentState) -> AgentState:
+    if state["intent"] != "help":
+        return {}
+    data = mcp_client.call_tool("knowledge.explain_platform", question=state["goal"])
+    return {"observations": {**state.get("observations", {}), "knowledge_agent": data}, "findings": state["findings"] + ["Knowledge Agent retrieved the MCP platform guide and business glossary."]}
+
+
 def customer_intelligence_agent(state: AgentState) -> AgentState:
     intent, params = state["intent"], state["params"]
+    if intent == "help":
+        return {}
     if intent == "top_customers":
         data = mcp_client.call_tool("customer.top_customers_by_lifetime_value", limit=params["limit"])
     elif intent == "customer_detail":
@@ -105,12 +115,14 @@ def campaign_agent(state: AgentState) -> AgentState:
 
 
 def response_agent(state: AgentState) -> AgentState:
+    default_data = state["observations"].get("knowledge_agent", {}) if state["intent"] == "help" else state["observations"].get("customer_agent", {})
+    default_agents = ["Supervisor", "Knowledge"] if state["intent"] == "help" else ["Supervisor", "Customer Intelligence"] + (["Product Intelligence", "Memory"] if state["intent"] == "churn_analysis" else [])
     result = state.get("result") or {
         "kind": state["intent"],
-        "data": state["observations"].get("customer_agent", {}),
-        "supporting_evidence": {key: value for key, value in state["observations"].items() if key != "customer_agent"},
-        "agents": ["Supervisor", "Customer Intelligence"] + (["Product Intelligence", "Memory"] if state["intent"] == "churn_analysis" else []) + ["Response"],
-        "summary": "Read-only request completed. No campaign was created.",
+        "data": default_data,
+        "supporting_evidence": {key: value for key, value in state["observations"].items() if key not in ("customer_agent", "knowledge_agent")},
+        "agents": default_agents + ["Response"],
+        "summary": "Platform guidance completed. No data was changed." if state["intent"] == "help" else "Read-only request completed. No campaign was created.",
     }
     status = state.get("status", "complete")
     with SessionLocal() as session:
@@ -123,13 +135,15 @@ def response_agent(state: AgentState) -> AgentState:
 
 workflow = StateGraph(AgentState)
 workflow.add_node("supervisor", supervisor_agent)
+workflow.add_node("knowledge", knowledge_agent)
 workflow.add_node("customer_intelligence", customer_intelligence_agent)
 workflow.add_node("product_intelligence", product_intelligence_agent)
 workflow.add_node("memory", memory_agent)
 workflow.add_node("campaign", campaign_agent)
 workflow.add_node("response", response_agent)
 workflow.add_edge(START, "supervisor")
-workflow.add_edge("supervisor", "customer_intelligence")
+workflow.add_edge("supervisor", "knowledge")
+workflow.add_edge("knowledge", "customer_intelligence")
 workflow.add_edge("customer_intelligence", "product_intelligence")
 workflow.add_edge("product_intelligence", "memory")
 workflow.add_edge("memory", "campaign")

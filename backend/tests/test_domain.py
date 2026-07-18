@@ -1,7 +1,7 @@
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from app.db import Base
-from app.domain import create_campaign_draft, decide_campaign_approval, find_churn_risk_customers, find_eligible_retention_customers, request_campaign_approval
+from app.domain import create_campaign_draft, dashboard_summary, decide_campaign_approval, explain_platform, find_churn_risk_customers, find_eligible_retention_customers, request_campaign_approval
 from app.models import CampaignTarget, Customer
 from app.reasoner import route_goal
 
@@ -24,6 +24,10 @@ def test_read_only_customer_query_never_routes_to_campaign():
     assert route.intent == "top_customers"
     assert route.limit == 5
     assert route_goal("Show customer 16246 details").customer_external_id == "16246"
+    assert route_goal("What does this app do?").intent == "help"
+    assert route_goal("What is the role of multi agent here?").intent == "help"
+    assert route_goal("What does lifetime value mean?").intent == "help"
+    assert route_goal("What is segment?").intent == "help"
 
 
 def test_campaign_targets_are_saved_and_not_retargeted():
@@ -37,8 +41,22 @@ def test_campaign_targets_are_saved_and_not_retargeted():
     assert first["target_count"] == 1
     assert session.query(CampaignTarget).count() == 1
     assert find_eligible_retention_customers(session)["customers"] == []
+    summary = dashboard_summary(session)
+    assert summary["eligible_retention_customers"] == 0
+    assert summary["currently_targeted_customers"] == 1
     try:
         create_campaign_draft(session, "Duplicate", "at_risk_high_value", "10% off", customer_ids=[customer.id])
         assert False, "duplicate target should have been rejected"
     except ValueError:
         pass
+
+
+def test_platform_help_explains_metrics_agents_and_campaign_capacity():
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine)()
+    result = explain_platform(session, "What does this app do and what is lifetime value?")
+    assert "retention" in result["answer"].lower()
+    assert {item["term"] for item in result["definitions"]} == {"Lifetime value (LTV)", "Churn risk", "Customer segment"}
+    assert any(item["name"] == "Supervisor" for item in result["agents"])
+    assert "eligible pool reaches zero" in result["campaign_policy"]

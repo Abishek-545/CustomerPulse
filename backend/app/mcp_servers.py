@@ -10,7 +10,7 @@ def customer_server() -> FastMCP:
 
     @mcp.resource("customer://segments")
     def segment_definitions() -> str:
-        return "champion: frequent/high value; at_risk_high_value: valuable but inactive; new: recently acquired; unsegmented: not yet classified"
+        return "at_risk_high_value: total spend >= £250 and churn risk >= 65%; active: every imported customer who does not meet that combined rule; seeded demo data may also use champion, new, or unsegmented"
 
     @mcp.prompt()
     def investigate_churn(segment: str = "at_risk_high_value") -> str:
@@ -128,7 +128,25 @@ def memory_server() -> FastMCP:
     return mcp
 
 
-SERVERS = {"customer": customer_server, "product": product_server, "campaign": campaign_server, "memory": memory_server}
+def knowledge_server() -> FastMCP:
+    mcp = FastMCP("customerpulse-knowledge")
+
+    @mcp.resource("knowledge://platform-guide")
+    def platform_guide() -> str:
+        return "CustomerPulse explains retail customer value, inactivity risk, customer groups, specialist-agent roles, campaign safety, and the source of derived metrics."
+
+    @mcp.prompt()
+    def explain_customerpulse(question: str = "What does this app do?") -> str:
+        return f"Answer this onboarding question in plain English using the platform guide: {question}"
+
+    @mcp.tool()
+    def explain_platform(question: str = "What does this app do?") -> dict:
+        with SessionLocal() as session:
+            return domain.explain_platform(session, question)
+    return mcp
+
+
+SERVERS = {"customer": customer_server, "product": product_server, "campaign": campaign_server, "memory": memory_server, "knowledge": knowledge_server}
 if __name__ == "__main__":
     selected = sys.argv[1] if len(sys.argv) > 1 else "customer"
     SERVERS[selected]().run()

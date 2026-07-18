@@ -27,6 +27,7 @@ class CustomerPulseMCPClient:
                 "campaign.request_campaign_approval": domain.request_campaign_approval,
                 "memory.search_memories": domain.search_memories,
                 "memory.save_business_learning": domain.save_business_learning,
+                "knowledge.explain_platform": domain.explain_platform,
             }
             if tool_name not in tools:
                 raise ValueError(f"Tool is not allowlisted: {tool_name}")

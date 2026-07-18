@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from .config import settings
 
 
-Intent = Literal["top_customers", "customer_detail", "purchase_history", "country_customers", "churn_analysis", "retention_campaign"]
+Intent = Literal["help", "top_customers", "customer_detail", "purchase_history", "country_customers", "churn_analysis", "retention_campaign"]
 
 
 class AgentRoute(BaseModel):
@@ -38,6 +38,8 @@ def route_goal(goal: str) -> AgentRoute:
         return AgentRoute(intent="purchase_history", customer_external_id=external_id, limit=_number(text, 20), rationale="The request asks for historical purchases and is read-only.")
     if external_id and any(word in text for word in ("detail", "profile", "show", "find")):
         return AgentRoute(intent="customer_detail", customer_external_id=external_id, rationale="The request asks for one customer profile and is read-only.")
+    if any(phrase in text for phrase in ("what does this app", "what this app", "what is this app", "how does this app", "what is customerpulse", "meaning of", "what does churn", "what is churn", "lifetime value mean", "what is lifetime value", "explain lifetime value", "segment mean", "what is segment", "explain segment", "what are these parameters", "meaning of parameter", "role of multi", "why multi", "what are the agents", "explain the app", "explain this app")):
+        return AgentRoute(intent="help", rationale="The request asks for product or metric guidance and is read-only.")
     country_match = re.search(r"(?:customers?\s+in|from|country)\s+([a-z][a-z ]{1,30})", text)
     if country_match:
         country = country_match.group(1).strip().rstrip("?.")
@@ -50,7 +52,7 @@ def route_goal(goal: str) -> AgentRoute:
 
 
 def _groq_route(goal: str) -> AgentRoute:
-    fallback = AgentRoute(intent="top_customers", limit=5, rationale="Ambiguous request handled as a safe read-only ranking.")
+    fallback = AgentRoute(intent="help", limit=5, rationale="Ambiguous request handled as safe product guidance.")
     if not settings.groq_api_key:
         return fallback
     try:
@@ -61,7 +63,7 @@ def _groq_route(goal: str) -> AgentRoute:
             response_format={"type": "json_object"},
             messages=[
                 {"role": "system", "content": "Route customer-operations requests. Never choose retention_campaign unless the user explicitly asks to create or draft a campaign. Return JSON only."},
-                {"role": "user", "content": f"Request: {goal}\nReturn intent (top_customers, customer_detail, purchase_history, country_customers, churn_analysis, retention_campaign), limit, customer_external_id, country, rationale."},
+                {"role": "user", "content": f"Request: {goal}\nReturn intent (help, top_customers, customer_detail, purchase_history, country_customers, churn_analysis, retention_campaign), limit, customer_external_id, country, rationale. Use help for questions about the app, metrics, terminology, or agent roles."},
             ],
         )
         return AgentRoute.model_validate(json.loads(response.choices[0].message.content or "{}"))

@@ -151,11 +151,49 @@ def save_business_learning(session: Session, category: str, content: str, confid
     return audit(session, "save_business_learning", {"category": category}, {"memory_id": memory.id})
 
 
+def explain_platform(session: Session, question: str = "What does this app do?") -> dict:
+    text = question.lower()
+    definitions = [
+        {"term": "Lifetime value (LTV)", "plain_name": "Total customer spend", "meaning": "The total value of all recorded orders for one customer.", "calculation": "Sum of the customer's order totals.", "example": "£1,056 means the customer has placed orders worth £1,056 in this dataset."},
+        {"term": "Churn risk", "plain_name": "Likelihood of not returning", "meaning": "An explainable estimate that a customer may not purchase again soon.", "calculation": "70% of purchase inactivity over 180 days, plus 25% when the customer ordered only once; capped at 95%.", "example": "95% means the customer has been inactive for a long time and/or purchased only once."},
+        {"term": "Customer segment", "plain_name": "Customer group", "meaning": "A business label used to group customers with similar value and risk.", "calculation": "At risk + high value requires churn risk of at least 65% and total spend of at least £250.", "example": "at_risk_high_value means valuable customer likely to stop buying; active means the customer does not meet that combined rule."},
+    ]
+    agents = [
+        {"name": "Supervisor", "role": "Understands the request, creates the plan, and chooses which specialists should work."},
+        {"name": "Customer Intelligence Agent", "role": "Uses MCP tools to retrieve rankings, profiles, locations, purchase history, risk and customer value."},
+        {"name": "Product Intelligence Agent", "role": "Checks product cancellations and performance when churn or campaigns are investigated."},
+        {"name": "Memory Agent", "role": "Retrieves previous business rules and learnings stored in PostgreSQL."},
+        {"name": "Campaign & Safety Agent", "role": "Selects only eligible customers, prevents duplicate targeting, creates a draft, and requests human approval."},
+        {"name": "Response Agent", "role": "Combines agent evidence into a clear answer without changing customer data."},
+    ]
+    if any(phrase in text for phrase in ("what does this app", "what this app", "what is this app", "how does this app", "what is customerpulse", "explain the app", "explain this app")):
+        answer = "CustomerPulse helps a customer-operations manager explore retail data, understand customer value and inactivity risk, investigate churn with specialist agents, and create deduplicated retention campaign drafts that require human approval."
+    elif any(word in text for word in ("lifetime", "ltv", "spend", "parameter", "column", "metric", "segment", "churn")):
+        answer = "These fields are derived business metrics, not original UCI columns. They turn transaction history into understandable customer value and risk signals."
+    elif any(word in text for word in ("multi-agent", "multi agent", "agent", "role")):
+        answer = "Multiple specialist agents divide the work: one routes, others collect customer/product/memory evidence, and only the safety-controlled campaign agent may create a draft action."
+    elif any(word in text for word in ("campaign", "eligible", "over", "exhaust")):
+        answer = "Each campaign selects new eligible high-value customers. Customers already in draft or active campaigns are excluded. When none remain, the agent creates nothing and reports that the eligible pool is exhausted."
+    else:
+        answer = "CustomerPulse helps a customer-operations manager explore retail data, understand customer value and inactivity risk, investigate churn with specialist agents, and create deduplicated retention campaign drafts that require human approval."
+    result = {
+        "answer": answer,
+        "definitions": definitions,
+        "agents": agents,
+        "campaign_policy": "Read-only questions never create campaigns. Only an explicit create/draft campaign request can write a campaign, and approval is required before activation. Draft and active targets are excluded from later campaigns; when the eligible pool reaches zero, no campaign is created.",
+    }
+    return audit(session, "explain_platform", {"question": question}, result)
+
+
 def dashboard_summary(session: Session) -> dict:
+    blocked = select(CampaignTarget.customer_id).join(Campaign).where(Campaign.status.in_(["draft", "active"]))
     return {
         "customers": session.scalar(select(func.count()).select_from(Customer)) or 0,
         "products": session.scalar(select(func.count()).select_from(Product)) or 0,
         "orders": session.scalar(select(func.count()).select_from(Order)) or 0,
         "high_risk_customers": session.scalar(select(func.count()).select_from(Customer).where(Customer.churn_risk >= 0.65)) or 0,
+        "high_value_at_risk": session.scalar(select(func.count()).select_from(Customer).where(Customer.segment == "at_risk_high_value")) or 0,
+        "eligible_retention_customers": session.scalar(select(func.count()).select_from(Customer).where(Customer.segment == "at_risk_high_value", ~Customer.id.in_(blocked))) or 0,
+        "currently_targeted_customers": session.scalar(select(func.count(func.distinct(CampaignTarget.customer_id))).join(Campaign).where(Campaign.status.in_(["draft", "active"]))) or 0,
         "pending_approvals": session.scalar(select(func.count()).select_from(ApprovalRequest).where(ApprovalRequest.status == "pending")) or 0,
     }
