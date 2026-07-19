@@ -4,7 +4,7 @@ from decimal import Decimal
 from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 from .email_service import deliver_campaign_emails, delivery_summary
-from .models import AgentRunStep, ApprovalRequest, AuditEvent, Campaign, CampaignOutcome, CampaignTarget, Customer, EmailDelivery, Investigation, Memory, OperationalTask, Order, Product, SupportCase
+from .models import AgentRunStep, ApprovalRequest, AuditEvent, Campaign, CampaignOutcome, CampaignTarget, Customer, EmailDelivery, Investigation, Memory, OperationalTask, Order, OrderItem, Product, SupportCase
 
 
 def audit(session: Session, tool: str, inputs: dict, output: dict, investigation_id: int | None = None) -> dict:
@@ -138,7 +138,29 @@ def analyze_product_portfolio(session: Session, limit: int = 10) -> dict:
     split = ((prices[middle - 1] + prices[middle]) / 2 if len(prices) % 2 == 0 else prices[middle]) if prices else 0.0
     low = session.scalars(select(Product).where(Product.unit_price <= split).order_by(Product.cancellation_rate.desc(), Product.unit_price.asc()).limit(limit)).all()
     high = session.scalars(select(Product).where(Product.unit_price > split).order_by(Product.cancellation_rate.asc(), Product.unit_price.desc()).limit(limit)).all()
-    row = lambda p: {"id": p.id, "sku": p.external_sku, "name": p.name, "unit_price": float(p.unit_price), "cancellation_rate": p.cancellation_rate, "sales_trend": p.sales_trend}
+    selected_products = [*low, *high]
+    first_date, last_date = session.execute(
+        select(func.min(Order.order_date), func.max(Order.order_date)).where(Order.status == "completed")
+    ).one()
+    completed_units: dict[int, tuple[int, int]] = {}
+    if selected_products and first_date and last_date:
+        midpoint = first_date + ((last_date - first_date) / 2)
+        positive_quantity = case((OrderItem.quantity > 0, OrderItem.quantity), else_=0)
+        period_rows = session.execute(
+            select(
+                OrderItem.product_id,
+                func.sum(case((Order.order_date <= midpoint, positive_quantity), else_=0)),
+                func.sum(case((Order.order_date > midpoint, positive_quantity), else_=0)),
+            )
+            .join(Order, Order.id == OrderItem.order_id)
+            .where(Order.status == "completed", OrderItem.product_id.in_([p.id for p in selected_products]))
+            .group_by(OrderItem.product_id)
+        ).all()
+        completed_units = {product_id: (int(earlier or 0), int(newer or 0)) for product_id, earlier, newer in period_rows}
+
+    def row(product: Product) -> dict:
+        earlier, newer = completed_units.get(product.id, (0, 0))
+        return {"id": product.id, "sku": product.external_sku, "name": product.name, "unit_price": float(product.unit_price), "cancellation_rate": product.cancellation_rate, "sales_trend": product.sales_trend, "earlier_completed_units": earlier, "newer_completed_units": newer, "has_completed_sales": earlier + newer > 0}
     result = {"price_split": split, "most_cancelled_low_value": [row(p) for p in low], "high_value_low_cancellation": [row(p) for p in high], "method": "Products are split at the dataset median unit price; each group is then ranked by cancellation rate."}
     return audit(session, "analyze_product_portfolio", {"limit": limit}, result)
 

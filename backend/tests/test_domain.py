@@ -1,10 +1,10 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 from app.db import Base
 from app.domain import analyze_product_portfolio, create_campaign_draft, create_product_recovery_tasks, create_support_cases_for_customers, dashboard_summary, decide_campaign_approval, explain_platform, find_churn_risk_customers, find_customers_by_minimum_value, find_eligible_retention_customers, find_frequent_cancellers, find_high_cancellation_products, list_campaign_targets, list_operational_tasks, request_campaign_approval, retry_campaign_delivery, simulate_campaign_outcome, update_operational_task_status
 from app.evaluations import run_offline_evaluations
-from app.models import CampaignTarget, Customer, EmailDelivery, Memory, Order, Product
+from app.models import CampaignTarget, Customer, EmailDelivery, Memory, Order, OrderItem, Product
 from app.planner import TEMPLATES, normalize_actions
 from app.reasoner import route_goal
 from app.config import settings
@@ -49,7 +49,10 @@ def test_customer_cancellation_value_and_product_portfolio_tools():
     customer = Customer(external_id="cancel-1", country="France", segment="at_risk_lower_value", churn_risk=0.95, lifetime_value=6000)
     products = [Product(external_sku="low", name="Low", unit_price=5, cancellation_rate=.8), Product(external_sku="high", name="High", unit_price=100, cancellation_rate=.01)]
     session.add_all([customer, *products]); session.flush()
-    session.add_all([Order(invoice_number="C-1", customer_id=customer.id, order_date=datetime.utcnow(), status="cancelled", total=-20), Order(invoice_number="C-2", customer_id=customer.id, order_date=datetime.utcnow(), status="cancelled", total=-30), Order(invoice_number="3", customer_id=customer.id, order_date=datetime.utcnow(), status="completed", total=50)])
+    now = datetime.utcnow()
+    orders = [Order(invoice_number="C-1", customer_id=customer.id, order_date=now - timedelta(days=2), status="cancelled", total=-20), Order(invoice_number="C-2", customer_id=customer.id, order_date=now - timedelta(days=1), status="cancelled", total=-30), Order(invoice_number="3", customer_id=customer.id, order_date=now, status="completed", total=50)]
+    session.add_all(orders); session.flush()
+    session.add_all([OrderItem(order_id=orders[0].id, product_id=products[0].id, quantity=-1, unit_price=5), OrderItem(order_id=orders[2].id, product_id=products[1].id, quantity=1, unit_price=100)])
     session.commit()
     cancellation = find_frequent_cancellers(session, limit=10)["customers"][0]
     assert cancellation["cancelled_orders"] == 2
@@ -57,7 +60,9 @@ def test_customer_cancellation_value_and_product_portfolio_tools():
     assert find_customers_by_minimum_value(session, 5000)["customers"][0]["external_id"] == "cancel-1"
     portfolio = analyze_product_portfolio(session, 5)
     assert portfolio["most_cancelled_low_value"][0]["sku"] == "low"
+    assert portfolio["most_cancelled_low_value"][0]["has_completed_sales"] is False
     assert portfolio["high_value_low_cancellation"][0]["sku"] == "high"
+    assert portfolio["high_value_low_cancellation"][0]["has_completed_sales"] is True
 
 
 def test_campaign_deduplication_is_scoped_by_business_purpose():

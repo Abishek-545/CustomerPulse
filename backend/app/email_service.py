@@ -133,5 +133,5 @@ def delivery_summary(session: Session, campaign_id: int) -> dict:
         "provider_accepted": counts.get("sent", 0),
         "simulated": counts.get("simulated", 0),
         "failed": counts.get("failed", 0),
-        "manager_notification": f"Email processing finished for {total} campaign customers: {counts.get('sent', 0)} accepted by SMTP, {counts.get('simulated', 0)} simulated, {counts.get('failed', 0)} failed. SMTP acceptance does not guarantee inbox placement.",
+        "manager_notification": f"Email processing finished for {total} campaign customers: {counts.get('sent', 0)} accepted by SMTP, {counts.get('simulated', 0)} simulated, {counts.get('failed', 0)} failed.",
     }
