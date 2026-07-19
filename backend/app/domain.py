@@ -270,6 +270,61 @@ def list_operational_tasks(session: Session, limit: int = 50) -> dict:
     return {"tasks": tasks[:limit]}
 
 
+def update_operational_task_status(session: Session, task_id: str, status: str) -> dict:
+    """Update an internal work record without confusing its UI-prefixed ID with a DB ID."""
+    if status not in {"open", "completed"}:
+        raise ValueError("Status must be open or completed")
+    if task_id.startswith("task-"):
+        record = session.get(OperationalTask, int(task_id.removeprefix("task-")))
+        record_type = "product_recovery"
+    elif task_id.startswith("support-"):
+        record = session.get(SupportCase, int(task_id.removeprefix("support-")))
+        record_type = "support_followup"
+    else:
+        raise ValueError("Unknown operational task ID")
+    if not record:
+        raise ValueError("Operational task not found")
+    previous_status = record.status
+    record.status = status
+    session.commit()
+    return audit(session, "update_operational_task_status", {"task_id": task_id, "status": status}, {
+        "task_id": task_id, "type": record_type, "previous_status": previous_status, "status": status,
+    }, getattr(record, "investigation_id", None))
+
+
+def list_campaign_targets(session: Session, campaign_id: int) -> list[dict]:
+    """Return saved campaign customers plus evidence appropriate to the campaign purpose."""
+    campaign = session.get(Campaign, campaign_id)
+    if not campaign:
+        raise ValueError("Campaign not found")
+    rows = session.execute(
+        select(CampaignTarget, Customer)
+        .join(Customer, Customer.id == CampaignTarget.customer_id)
+        .where(CampaignTarget.campaign_id == campaign_id)
+        .order_by(CampaignTarget.id)
+    ).all()
+    result = []
+    for target, customer in rows:
+        item = {
+            "customer_id": customer.id, "external_id": customer.external_id, "country": customer.country,
+            "segment": customer.segment, "risk": customer.churn_risk,
+            "lifetime_value": float(customer.lifetime_value), "target_status": target.status,
+        }
+        if campaign.segment == "frequent_cancellers":
+            cancelled, total, value = session.execute(select(
+                func.sum(case((Order.status == "cancelled", 1), else_=0)),
+                func.count(Order.id),
+                func.sum(case((Order.status == "cancelled", func.abs(Order.total)), else_=0)),
+            ).where(Order.customer_id == customer.id)).one()
+            item.update({
+                "cancelled_orders": int(cancelled or 0), "total_orders": int(total or 0),
+                "cancellation_rate": float((cancelled or 0) / total) if total else 0.0,
+                "cancelled_value": float(value or 0),
+            })
+        result.append(item)
+    return result
+
+
 def campaign_delivery_status(session: Session, campaign_id: int) -> dict:
     return delivery_summary(session, campaign_id)
 
@@ -341,8 +396,8 @@ def explain_platform(session: Session, question: str = "What does this app do?")
     text = question.lower()
     definitions = [
         {"term": "Lifetime value (LTV)", "plain_name": "Total customer spend", "meaning": "The total value of all recorded orders for one customer.", "calculation": "Sum of the customer's order totals.", "example": "£1,056 means the customer has placed orders worth £1,056 in this dataset."},
-        {"term": "Churn risk", "plain_name": "Likelihood of not returning", "meaning": "An explainable estimate that a customer may not purchase again soon.", "calculation": "70% of purchase inactivity over 180 days, plus 25% when the customer ordered only once; capped at 95%.", "example": "95% means the customer has been inactive for a long time and/or purchased only once."},
-        {"term": "Customer segment", "plain_name": "Customer group", "meaning": "A business label that shows value and risk separately.", "calculation": "Risk uses a 65% threshold and spend uses a £250 threshold, producing four clear combinations.", "example": "A 95%-risk £50 customer is labelled lower-spend at risk; a 95%-risk £500 customer is labelled high-spend at risk."},
+        {"term": "Inactivity risk score", "plain_name": "Relative risk of not returning", "meaning": "An explainable ranking of which customers look least engaged relative to the current dataset; it is not a probability.", "calculation": "75% recency percentile plus 25% completed-order-frequency percentile, bounded from 5 to 95.", "example": "A score of 90 means the customer ranks near the high-risk end of this customer population, not that there is a 90% proven chance of churn."},
+        {"term": "Customer segment", "plain_name": "Customer group", "meaning": "A business label that shows value and risk separately.", "calculation": "Risk uses a 65/100 threshold and spend uses a £250 threshold, producing four clear combinations.", "example": "A 90/100-risk £50 customer is lower-spend at risk; a 90/100-risk £500 customer is high-spend at risk."},
     ]
     agents = [
         {"name": "Supervisor", "role": "Understands the request, creates the plan, and chooses which specialists should work."},
@@ -352,10 +407,13 @@ def explain_platform(session: Session, question: str = "What does this app do?")
         {"name": "Product Portfolio Agent", "role": "Compares lower-price products with high cancellation rates against higher-price products with low cancellation rates."},
         {"name": "Memory Agent", "role": "Retrieves previous business rules and learnings stored in PostgreSQL."},
         {"name": "Campaign & Safety Agent", "role": "Selects only eligible customers, prevents duplicate targeting, creates a draft, and requests human approval."},
+        {"name": "Customer Care Agent", "role": "Creates deduplicated internal follow-up cases for qualifying customers; it does not send customer email."},
+        {"name": "Product Operations Agent", "role": "Creates deduplicated internal investigation tasks for products with cancellation evidence; it does not edit product data."},
+        {"name": "Observer & Replanner", "role": "Checks each tool result, continues only when evidence supports the next step, and stops unsafe or unnecessary actions."},
         {"name": "Response Agent", "role": "Combines agent evidence into a clear answer without changing customer data."},
     ]
     if any(phrase in text for phrase in ("what does this app", "what this app", "what is this app", "how does this app", "what is customerpulse", "explain the app", "explain this app")):
-        answer = "CustomerPulse helps a customer-operations manager explore retail data, understand customer value and inactivity risk, analyze cancellation behavior, compare product quality signals, and prepare deduplicated retention or feedback actions that require human approval before email delivery."
+        answer = "CustomerPulse helps a customer-operations manager explore retail data, understand customer value and inactivity risk, analyze cancellation and product signals, create traceable internal care or recovery work, and prepare deduplicated retention or feedback actions that require human approval before email delivery."
     elif any(word in text for word in ("lifetime", "ltv", "spend", "parameter", "column", "metric", "segment", "churn")):
         answer = "These fields are derived business metrics, not original UCI columns. They turn transaction history into understandable customer value and risk signals."
     elif any(word in text for word in ("multi-agent", "multi agent", "agent", "role")):

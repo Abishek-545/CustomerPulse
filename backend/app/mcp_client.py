@@ -43,6 +43,7 @@ DIRECT_TOOLS = {
     "operations.create_support_cases_for_customers": domain.create_support_cases_for_customers,
     "operations.create_product_recovery_tasks": domain.create_product_recovery_tasks,
     "operations.list_operational_tasks": domain.list_operational_tasks,
+    "operations.update_operational_task_status": domain.update_operational_task_status,
 }
 
 

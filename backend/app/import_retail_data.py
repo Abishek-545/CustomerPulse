@@ -52,15 +52,24 @@ def normalized_row(values: tuple) -> dict | None:
 def update_operational_metrics(session) -> None:
     # These deterministic SQL calculations avoid holding the whole dataset in memory.
     session.execute(text("""
-        WITH reference_date AS (SELECT MAX(order_date) AS value FROM orders), stats AS (
-            SELECT customer_id, SUM(total) AS lifetime_value, MAX(order_date) AS last_purchase_at, COUNT(*) AS order_count
+        WITH stats AS (
+            SELECT customer_id, SUM(total) AS lifetime_value,
+                   COALESCE(MAX(order_date) FILTER (WHERE status = 'completed'), MAX(order_date)) AS last_completed_at,
+                   COUNT(*) FILTER (WHERE status = 'completed') AS completed_orders
             FROM orders GROUP BY customer_id
+        ), ranked AS (
+            SELECT customer_id, lifetime_value, last_completed_at,
+                   PERCENT_RANK() OVER (ORDER BY last_completed_at DESC) AS recency_percentile,
+                   PERCENT_RANK() OVER (ORDER BY completed_orders DESC) AS frequency_percentile
+            FROM stats
         )
         UPDATE customers c SET
-            lifetime_value = GREATEST(0, stats.lifetime_value),
-            last_purchase_at = stats.last_purchase_at,
-            churn_risk = ROUND(LEAST(0.95, LEAST(1.0, EXTRACT(DAY FROM (reference_date.value - stats.last_purchase_at)) / 180.0) * 0.7 + CASE WHEN stats.order_count <= 1 THEN 0.25 ELSE 0 END)::numeric, 2)
-        FROM stats, reference_date WHERE c.id = stats.customer_id
+            lifetime_value = GREATEST(0, ranked.lifetime_value),
+            last_purchase_at = ranked.last_completed_at,
+            churn_risk = ROUND(LEAST(0.95, GREATEST(0.05,
+                0.75 * ranked.recency_percentile + 0.25 * ranked.frequency_percentile
+            ))::numeric, 2)
+        FROM ranked WHERE c.id = ranked.customer_id
     """))
     session.execute(text("""
         UPDATE customers SET segment = CASE

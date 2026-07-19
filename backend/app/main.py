@@ -9,12 +9,12 @@ from .db import Base, engine, get_session
 from .seed import seed
 from .graph import run_investigation
 from . import domain
-from .models import AgentRunStep, ApprovalRequest, AuditEvent, Campaign, CampaignOutcome, CampaignTarget, Customer, EmailDelivery, EvaluationRun, Investigation, OperationalTask, Product
+from .models import AgentRunStep, ApprovalRequest, AuditEvent, Campaign, CampaignOutcome, CampaignTarget, Customer, EmailDelivery, EvaluationRun, Investigation, Product
 from .config import settings
 from .mcp_client import mcp_client
 from .mcp_servers import SERVERS
 from .evaluations import list_evaluation_runs, run_offline_evaluations
-from .schema_migrations import migrate_customer_email, migrate_customer_segments
+from .schema_migrations import migrate_customer_email, migrate_customer_segments, recalculate_customer_risk
 
 
 MCP_SERVERS = {name: factory() for name, factory in SERVERS.items()}
@@ -26,6 +26,7 @@ async def lifespan(_: FastAPI):
     migrate_customer_email(engine)
     with next(get_session()) as session:
         seed(session)
+    recalculate_customer_risk(engine)
     migrate_customer_segments(engine)
     async with AsyncExitStack() as stack:
         for server in MCP_SERVERS.values():
@@ -54,6 +55,10 @@ class InvestigationRequest(BaseModel):
 class ApprovalDecision(BaseModel):
     approved: bool
     decided_by: str = Field(default="demo-manager", min_length=2, max_length=120)
+
+
+class OperationalTaskStatus(BaseModel):
+    status: str = Field(pattern="^(open|completed)$")
 
 
 @app.get("/health")
@@ -154,8 +159,10 @@ def campaigns(session: Session = Depends(get_session)):
 
 @app.get("/api/campaigns/{campaign_id}/targets")
 def campaign_targets(campaign_id: int, session: Session = Depends(get_session)):
-    rows = session.execute(select(CampaignTarget, Customer).join(Customer, Customer.id == CampaignTarget.customer_id).where(CampaignTarget.campaign_id == campaign_id)).all()
-    return [{"customer_id": customer.id, "external_id": customer.external_id, "segment": customer.segment, "risk": customer.churn_risk, "lifetime_value": float(customer.lifetime_value), "target_status": target.status} for target, customer in rows]
+    try:
+        return domain.list_campaign_targets(session, campaign_id)
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
 
 
 @app.get("/api/campaigns/{campaign_id}/deliveries")
@@ -182,6 +189,14 @@ def campaign_simulate_outcome(campaign_id: int, session: Session = Depends(get_s
 @app.get("/api/operational-tasks")
 def operational_tasks(session: Session = Depends(get_session)):
     return domain.list_operational_tasks(session, 100)["tasks"]
+
+
+@app.patch("/api/operational-tasks/{task_id}/status")
+def operational_task_status(task_id: str, payload: OperationalTaskStatus, session: Session = Depends(get_session)):
+    try:
+        return domain.update_operational_task_status(session, task_id, payload.status)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
 
 
 @app.get("/api/investigations/{investigation_id}/steps")

@@ -2,7 +2,7 @@ from datetime import datetime
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 from app.db import Base
-from app.domain import analyze_product_portfolio, create_campaign_draft, create_product_recovery_tasks, create_support_cases_for_customers, dashboard_summary, decide_campaign_approval, explain_platform, find_churn_risk_customers, find_customers_by_minimum_value, find_eligible_retention_customers, find_frequent_cancellers, find_high_cancellation_products, list_operational_tasks, request_campaign_approval, retry_campaign_delivery, simulate_campaign_outcome
+from app.domain import analyze_product_portfolio, create_campaign_draft, create_product_recovery_tasks, create_support_cases_for_customers, dashboard_summary, decide_campaign_approval, explain_platform, find_churn_risk_customers, find_customers_by_minimum_value, find_eligible_retention_customers, find_frequent_cancellers, find_high_cancellation_products, list_campaign_targets, list_operational_tasks, request_campaign_approval, retry_campaign_delivery, simulate_campaign_outcome, update_operational_task_status
 from app.evaluations import run_offline_evaluations
 from app.models import CampaignTarget, Customer, EmailDelivery, Memory, Order, Product
 from app.planner import TEMPLATES, normalize_actions
@@ -98,7 +98,7 @@ def test_platform_help_explains_metrics_agents_and_campaign_capacity():
     session = sessionmaker(bind=engine)()
     result = explain_platform(session, "What does this app do and what is lifetime value?")
     assert "retention" in result["answer"].lower()
-    assert {item["term"] for item in result["definitions"]} == {"Lifetime value (LTV)", "Churn risk", "Customer segment"}
+    assert {item["term"] for item in result["definitions"]} == {"Lifetime value (LTV)", "Inactivity risk score", "Customer segment"}
     assert any(item["name"] == "Supervisor" for item in result["agents"])
     assert "eligible pool reaches zero" in result["campaign_policy"]
 
@@ -115,6 +115,29 @@ def test_support_cases_are_visible_in_operations_backlog():
     assert len(tasks) == 1
     assert tasks[0]["type"] == "support_followup"
     assert tasks[0]["payload"]["customer_external_id"] == "support-101"
+    result = update_operational_task_status(session, tasks[0]["id"], "completed")
+    assert result["previous_status"] == "open"
+    assert list_operational_tasks(session)["tasks"][0]["status"] == "completed"
+
+
+def test_feedback_campaign_targets_include_cancellation_evidence():
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine)()
+    customer = Customer(external_id="feedback-1", country="France", segment="at_risk_lower_value", churn_risk=.8, lifetime_value=50)
+    session.add(customer); session.flush()
+    session.add_all([
+        Order(invoice_number="C-10", customer_id=customer.id, order_date=datetime.utcnow(), status="cancelled", total=-30),
+        Order(invoice_number="11", customer_id=customer.id, order_date=datetime.utcnow(), status="completed", total=50),
+    ])
+    session.commit()
+    campaign = create_campaign_draft(session, "Cancellation feedback", "frequent_cancellers", "Share feedback", customer_ids=[customer.id])
+    target = list_campaign_targets(session, campaign["campaign_id"])[0]
+    assert target["country"] == "France"
+    assert target["cancelled_orders"] == 1
+    assert target["total_orders"] == 2
+    assert target["cancellation_rate"] == .5
+    assert target["cancelled_value"] == 30
 
 
 def test_customer_email_migration_backfills_existing_rows():

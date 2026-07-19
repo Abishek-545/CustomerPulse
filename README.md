@@ -6,8 +6,8 @@ CustomerPulse is a deployed, autonomous customer-operations platform built with 
 
 - Customer intelligence: rankings, profiles, geography, purchase history, value and inactivity-risk analysis.
 - Retention campaigns: deduplicated customer selection, campaign draft creation, manager approval, email delivery and campaign outcomes.
-- Customer-care triage: creates deduplicated internal support cases for high-risk customers.
-- Product recovery: identifies elevated cancellation signals and creates operational recovery tasks.
+- Customer-care triage: creates deduplicated internal support cases for high-risk customers; managers can complete or reopen them.
+- Product recovery: identifies elevated cancellation signals and creates updateable operational recovery tasks.
 - Closed-loop learning: completed campaign conversion and uplift are stored as long-term business memory.
 - Product guidance: a Knowledge Agent explains the application, metrics, safety rules and agent roles.
 
@@ -52,7 +52,7 @@ The manager UI reports sent, simulated and failed totals. Configure `SMTP_USERNA
 
 ## Evaluation
 
-The versioned 40-case regression dataset measures:
+The versioned 48-case regression dataset measures:
 
 - intent accuracy;
 - parameter extraction;
@@ -60,6 +60,8 @@ The versioned 40-case regression dataset measures:
 - expected agent trajectory validity.
 
 Evaluations run from the Quality & MCP screen and are stored in PostgreSQL. The same suite is exercised in CI alongside domain, campaign, email, idempotency and outcome tests.
+
+The inactivity risk score is a relative rank, not a churn probability: 75% comes from recency percentile and 25% from completed-order-frequency percentile, bounded from 5 to 95. This avoids presenting every old record as an unsupported 95% prediction.
 
 ## Data and database CRUD
 

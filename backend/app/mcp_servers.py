@@ -10,7 +10,7 @@ def customer_server() -> FastMCP:
 
     @mcp.resource("customer://segments")
     def segment_definitions() -> str:
-        return "Customer groups combine two independent dimensions: likelihood of not returning (65% threshold) and total customer spend (£250 threshold). Groups are high-spend at risk, lower-spend at risk, high-spend active, and regular active."
+        return "Customer groups combine two independent dimensions: relative inactivity risk score (65/100 threshold) and total customer spend (£250 threshold). The score is a dataset-relative ranking, not a predicted probability."
 
     @mcp.prompt()
     def investigate_churn(segment: str = "at_risk_high_value") -> str:
@@ -200,6 +200,11 @@ def operations_server() -> FastMCP:
     def list_operational_tasks(limit: int = 50) -> dict:
         with SessionLocal() as session:
             return domain.list_operational_tasks(session, limit)
+
+    @mcp.tool()
+    def update_operational_task_status(task_id: str, status: str) -> dict:
+        with SessionLocal() as session:
+            return domain.update_operational_task_status(session, task_id, status)
     return mcp
 
 

@@ -35,3 +35,33 @@ def migrate_customer_segments(engine: Engine) -> None:
                 ELSE 'regular_active'
             END
         """))
+
+
+def recalculate_customer_risk(engine: Engine) -> None:
+    """Calibrate inactivity risk to the current customer population.
+
+    This is deliberately a relative risk score, not a probability prediction.
+    Percentile ranks prevent an old static dataset from collapsing at one cap.
+    """
+    if engine.dialect.name != "postgresql":
+        return
+    with engine.begin() as connection:
+        connection.execute(text("""
+            WITH stats AS (
+                SELECT customer_id,
+                       COALESCE(MAX(order_date) FILTER (WHERE status = 'completed'), MAX(order_date)) AS last_completed_at,
+                       COUNT(*) FILTER (WHERE status = 'completed') AS completed_orders
+                FROM orders GROUP BY customer_id
+            ), ranked AS (
+                SELECT customer_id,
+                       PERCENT_RANK() OVER (ORDER BY last_completed_at DESC) AS recency_percentile,
+                       PERCENT_RANK() OVER (ORDER BY completed_orders DESC) AS frequency_percentile
+                FROM stats
+            )
+            UPDATE customers c SET churn_risk = ROUND(
+                LEAST(0.95, GREATEST(0.05,
+                    0.75 * ranked.recency_percentile + 0.25 * ranked.frequency_percentile
+                ))::numeric, 2
+            )
+            FROM ranked WHERE c.id = ranked.customer_id
+        """))
