@@ -29,6 +29,7 @@ def migrate_customer_segments(engine: Engine) -> None:
     with engine.begin() as connection:
         connection.execute(text("""
             UPDATE customers SET segment = CASE
+                WHEN last_purchase_at IS NULL THEN 'insufficient_history'
                 WHEN churn_risk >= 0.65 AND lifetime_value >= 250 THEN 'at_risk_high_value'
                 WHEN churn_risk >= 0.65 THEN 'at_risk_lower_value'
                 WHEN lifetime_value >= 250 THEN 'high_value_active'
@@ -64,4 +65,8 @@ def recalculate_customer_risk(engine: Engine) -> None:
                 ))::numeric, 2
             )
             FROM ranked WHERE c.id = ranked.customer_id
+        """))
+        connection.execute(text("""
+            UPDATE customers c SET churn_risk = 0.05
+            WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id)
         """))

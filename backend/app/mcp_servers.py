@@ -10,7 +10,7 @@ def customer_server() -> FastMCP:
 
     @mcp.resource("customer://segments")
     def segment_definitions() -> str:
-        return "Customer groups combine two independent dimensions: relative inactivity risk score (65/100 threshold) and total customer spend (£250 threshold). The score is a dataset-relative ranking, not a predicted probability."
+        return "Customer groups combine two independent dimensions: relative inactivity risk score (65/100 threshold) and total customer spend (£250 threshold). The score is a dataset-relative ranking, not a predicted probability; profiles without linked orders are marked insufficient_history."
 
     @mcp.prompt()
     def investigate_churn(segment: str = "at_risk_high_value") -> str:

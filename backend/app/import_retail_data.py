@@ -73,6 +73,7 @@ def update_operational_metrics(session) -> None:
     """))
     session.execute(text("""
         UPDATE customers SET segment = CASE
+            WHEN last_purchase_at IS NULL THEN 'insufficient_history'
             WHEN churn_risk >= 0.65 AND lifetime_value >= 250 THEN 'at_risk_high_value'
             WHEN churn_risk >= 0.65 THEN 'at_risk_lower_value'
             WHEN lifetime_value >= 250 THEN 'high_value_active'

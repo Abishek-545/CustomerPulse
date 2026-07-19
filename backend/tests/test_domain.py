@@ -8,7 +8,7 @@ from app.models import CampaignTarget, Customer, EmailDelivery, Memory, Order, P
 from app.planner import TEMPLATES, normalize_actions
 from app.reasoner import route_goal
 from app.config import settings
-from app.schema_migrations import migrate_customer_email
+from app.schema_migrations import migrate_customer_email, migrate_customer_segments
 
 
 def test_campaign_requires_approval_before_activation():
@@ -149,6 +149,17 @@ def test_customer_email_migration_backfills_existing_rows():
     with engine.connect() as connection:
         emails = connection.execute(text("SELECT email FROM customers ORDER BY id")).scalars().all()
     assert emails == ["temp66642@gmail.com", "temp66642@gmail.com"]
+
+
+def test_customer_without_linked_orders_is_not_labelled_active():
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine)()
+    customer = Customer(external_id="no-history", country="UK", churn_risk=0.05, lifetime_value=0)
+    session.add(customer); session.commit()
+    migrate_customer_segments(engine)
+    session.refresh(customer)
+    assert customer.segment == "insufficient_history"
 
 
 def test_approval_creates_idempotent_demo_email_and_outcome_learning():
