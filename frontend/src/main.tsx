@@ -84,15 +84,16 @@ function App() {
     setApprovalBusy(id); setError("");
     try {
       const result = await call(`/api/approvals/${id}/decision`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ approved, decided_by: "dashboard-manager" }) });
-      setManagerNotice(result.email_delivery?.manager_notification || `Campaign ${result.campaign_status}.`);
+      const notice = result.email_delivery?.manager_notification || `Campaign ${result.campaign_status}.`;
       await refresh();
+      setManagerNotice(notice);
     } catch (cause) {
       try {
         const latest = await call("/api/approvals");
         const saved = latest.find((item: any) => item.id === id && item.status !== "pending");
         if (saved) {
-          setManagerNotice(`Campaign #${saved.campaign_id} was successfully ${saved.status}. The dashboard recovered after a response interruption.`);
           await refresh();
+          setManagerNotice(`Campaign #${saved.campaign_id} was successfully ${saved.status}. The dashboard recovered after a response interruption.`);
         } else {
           setError(cause instanceof Error ? `Approval failed: ${cause.message}` : "The approval could not be saved.");
         }
@@ -101,9 +102,9 @@ function App() {
       }
     } finally { setApprovalBusy(null); }
   };
-  const simulateOutcome = async (campaignId: number) => { try { const result = await call(`/api/campaigns/${campaignId}/simulate-outcome`, { method: "POST" }); setManagerNotice(`Campaign #${campaignId} completed: ${result.converted} conversions, ${pct(result.uplift)} uplift, ${money(result.attributed_revenue)} attributed revenue.`); await refresh(); } catch (cause) { setError(cause instanceof Error ? cause.message : "Outcome processing failed."); } };
-  const retryDelivery = async (campaignId: number) => { try { const result = await call(`/api/campaigns/${campaignId}/deliver`, { method: "POST" }); setManagerNotice(result.manager_notification); await refresh(); } catch (cause) { setError(cause instanceof Error ? cause.message : "Email delivery retry failed."); } };
-  const updateTaskStatus = async (taskId: string, status: "open" | "completed") => { try { await call(`/api/operational-tasks/${taskId}/status`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status }) }); setManagerNotice(`${taskId} marked ${status}.`); await refresh(); } catch (cause) { setError(cause instanceof Error ? cause.message : "The work item could not be updated."); } };
+  const simulateOutcome = async (campaignId: number) => { try { const result = await call(`/api/campaigns/${campaignId}/simulate-outcome`, { method: "POST" }); await refresh(); setManagerNotice(`Campaign #${campaignId} completed: ${result.converted} conversions, ${pct(result.uplift)} uplift, ${money(result.attributed_revenue)} attributed revenue.`); } catch (cause) { setError(cause instanceof Error ? cause.message : "Outcome processing failed."); } };
+  const retryDelivery = async (campaignId: number) => { try { const result = await call(`/api/campaigns/${campaignId}/deliver`, { method: "POST" }); await refresh(); setManagerNotice(result.manager_notification); } catch (cause) { setError(cause instanceof Error ? cause.message : "Email delivery retry failed."); } };
+  const updateTaskStatus = async (taskId: string, status: "open" | "completed") => { try { await call(`/api/operational-tasks/${taskId}/status`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status }) }); await refresh(); setManagerNotice(`${taskId} marked ${status}.`); } catch (cause) { setError(cause instanceof Error ? cause.message : "The work item could not be updated."); } };
   const runEvaluations = async () => { try { setManagerNotice("Evaluation suite is running…"); const result = await call("/api/evaluations/run", { method: "POST" }); await refresh(); setEvaluations(previous => [result, ...previous.filter(item => item.id !== result.id)]); setManagerNotice(`Evaluation complete: ${result.scores.passed}/${result.scores.cases} cases passed.`); } catch { setError("The evaluation suite could not run."); } };
   const toggleTargets = async (campaignId: number) => {
     if (expandedCampaign === campaignId) return setExpandedCampaign(null);
