@@ -135,9 +135,16 @@ def request_campaign_approval(session: Session, campaign_id: int, reason: str) -
 
 def decide_campaign_approval(session: Session, approval_id: int, approved: bool, decided_by: str) -> dict:
     request = session.get(ApprovalRequest, approval_id)
-    if not request or request.status != "pending":
+    if not request:
         raise ValueError("Approval request is unavailable")
-    request.status = "approved" if approved else "rejected"
+    desired_status = "approved" if approved else "rejected"
+    if request.status == desired_status:
+        campaign = session.get(Campaign, request.campaign_id)
+        email_result = delivery_summary(session, campaign.id) if approved else None
+        return {"campaign_id": campaign.id, "campaign_status": campaign.status, "email_delivery": email_result, "idempotent": True}
+    if request.status != "pending":
+        raise ValueError(f"Approval was already {request.status}; it cannot be changed to {desired_status}")
+    request.status = desired_status
     request.decided_by, request.decided_at = decided_by, datetime.utcnow()
     campaign = session.get(Campaign, request.campaign_id)
     campaign.status = "active" if approved else "rejected"

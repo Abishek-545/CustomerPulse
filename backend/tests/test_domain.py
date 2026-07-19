@@ -107,6 +107,10 @@ def test_approval_creates_idempotent_demo_email_and_outcome_learning():
     decision = decide_campaign_approval(session, approval["approval_id"], True, "tester")
     assert decision["email_delivery"]["simulated"] == 1
     assert session.query(EmailDelivery).one().recipient == "temp66642@gmail.com"
+    repeated = decide_campaign_approval(session, approval["approval_id"], True, "tester")
+    assert repeated["idempotent"] is True
+    assert repeated["email_delivery"]["simulated"] == 1
+    assert session.query(EmailDelivery).count() == 1
     outcome = simulate_campaign_outcome(session, draft["campaign_id"])
     assert outcome["delivered"] == 1
     assert outcome["status"] == "complete"

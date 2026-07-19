@@ -39,6 +39,7 @@ function App() {
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
   const [managerNotice, setManagerNotice] = useState("");
+  const [approvalBusy, setApprovalBusy] = useState<number | null>(null);
 
   useEffect(() => {
     if (!managerNotice) return;
@@ -78,8 +79,26 @@ function App() {
     finally { setBusy(false); }
   };
   const decide = async (id: number, approved: boolean) => {
-    try { const result = await call(`/api/approvals/${id}/decision`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ approved, decided_by: "dashboard-manager" }) }); setManagerNotice(result.email_delivery?.manager_notification || `Campaign ${result.campaign_status}.`); await refresh(); }
-    catch { setError("The approval could not be saved."); }
+    if (approvalBusy !== null) return;
+    setApprovalBusy(id); setError("");
+    try {
+      const result = await call(`/api/approvals/${id}/decision`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ approved, decided_by: "dashboard-manager" }) });
+      setManagerNotice(result.email_delivery?.manager_notification || `Campaign ${result.campaign_status}.`);
+      await refresh();
+    } catch (cause) {
+      try {
+        const latest = await call("/api/approvals");
+        const saved = latest.find((item: any) => item.id === id && item.status !== "pending");
+        if (saved) {
+          setManagerNotice(`Campaign #${saved.campaign_id} was successfully ${saved.status}. The dashboard recovered after a response interruption.`);
+          await refresh();
+        } else {
+          setError(cause instanceof Error ? `Approval failed: ${cause.message}` : "The approval could not be saved.");
+        }
+      } catch {
+        setError("The approval result could not be confirmed. Refresh before trying again.");
+      }
+    } finally { setApprovalBusy(null); }
   };
   const simulateOutcome = async (campaignId: number) => { try { const result = await call(`/api/campaigns/${campaignId}/simulate-outcome`, { method: "POST" }); setManagerNotice(`Campaign #${campaignId} completed: ${result.converted} conversions, ${pct(result.uplift)} uplift, ${money(result.attributed_revenue)} attributed revenue.`); await refresh(); } catch (cause) { setError(cause instanceof Error ? cause.message : "Outcome processing failed."); } };
   const retryDelivery = async (campaignId: number) => { try { const result = await call(`/api/campaigns/${campaignId}/deliver`, { method: "POST" }); setManagerNotice(result.manager_notification); await refresh(); } catch (cause) { setError(cause instanceof Error ? cause.message : "Email delivery retry failed."); } };
@@ -116,7 +135,7 @@ function App() {
       {tab === "overview" && <Overview dashboard={dashboard} investigations={investigations} campaigns={campaigns} pending={pending} products={products} execute={execute} />}
       {tab === "workspace" && <Workspace query={query} setQuery={setQuery} clearResult={() => setAgentResult(null)} execute={execute} busy={busy} response={agentResult} investigations={investigations} openCampaigns={() => setTab("campaigns")} openOperations={() => setTab("operations")} />}
       {tab === "customers" && <Customers rows={filteredCustomers} search={search} setSearch={setSearch} execute={execute} />}
-      {tab === "campaigns" && <Campaigns dashboard={dashboard} campaigns={campaigns} approvals={approvals} targets={targets} expanded={expandedCampaign} toggle={toggleTargets} decide={decide} simulateOutcome={simulateOutcome} retryDelivery={retryDelivery} />}
+      {tab === "campaigns" && <Campaigns dashboard={dashboard} campaigns={campaigns} approvals={approvals} targets={targets} expanded={expandedCampaign} toggle={toggleTargets} decide={decide} approvalBusy={approvalBusy} simulateOutcome={simulateOutcome} retryDelivery={retryDelivery} />}
       {tab === "operations" && <Operations tasks={tasks} execute={execute}/>}
       {tab === "quality" && <Quality evaluations={evaluations} capabilities={mcpCapabilities} runEvaluations={runEvaluations}/>}
       {tab === "guide" && <Guide execute={execute}/>}
@@ -191,13 +210,13 @@ function Customers({ rows, search, setSearch, execute }: any) {
   </Card>;
 }
 
-function Campaigns({ dashboard, campaigns, approvals, targets, expanded, toggle, decide, simulateOutcome, retryDelivery }: any) {
+function Campaigns({ dashboard, campaigns, approvals, targets, expanded, toggle, decide, approvalBusy, simulateOutcome, retryDelivery }: any) {
   const approvalFor = (id: number) => approvals.find((item: any) => item.campaign_id === id);
   return <div className="campaign-list"><section className="capacity-card"><div><span>Eligible customers remaining</span><strong>{dashboard?.eligible_retention_customers ?? "—"}</strong></div><div><span>Customers targeted historically</span><strong>{dashboard?.currently_targeted_customers ?? "—"}</strong></div><p>Every customer saved in any campaign is excluded from future campaigns in this demo. When none remain, the agent safely creates nothing instead of repeatedly targeting the same people.</p></section>{campaigns.length === 0 && <Card title="No campaigns yet"><p className="muted">Explicitly request a campaign from the Agent workspace.</p></Card>}{campaigns.map((campaign: any) => { const approval = approvalFor(campaign.id); const rows = targets[campaign.id] || []; const delivered = (campaign.delivery?.sent || 0) + (campaign.delivery?.simulated || 0); return <section className="campaign-card" key={campaign.id}>
     <div className="campaign-main"><div><div className="campaign-title"><span>Campaign #{campaign.id}</span><StatusBadge value={campaign.status}/></div><h2>{campaign.name}</h2><p>{campaign.offer} · Customer group: {friendlySegment(campaign.segment)}</p></div><div className="target-total"><strong>{campaign.target_count}</strong><span>target customers</span></div></div>
     {campaign.status !== "draft" && campaign.status !== "rejected" && <div className="delivery-strip"><b>Email delivery</b><span>{campaign.delivery?.sent || 0} sent</span><span>{campaign.delivery?.simulated || 0} simulated</span><span className={campaign.delivery?.failed ? "danger" : ""}>{campaign.delivery?.failed || 0} failed</span>{delivered === 0 && <span className="danger">No delivery recorded</span>}</div>}
     {campaign.outcome && <Outcome data={campaign.outcome} legacy={campaign.outcome.delivered === 0}/>}
-    <div className="campaign-actions"><button className="secondary" onClick={() => toggle(campaign.id)}>{expanded === campaign.id ? "Hide customers" : `View ${campaign.target_count} customers`}</button>{approval?.status === "pending" && <><button className="approve" onClick={() => decide(approval.id, true)}>Approve & send emails</button><button className="reject" onClick={() => decide(approval.id, false)}>Reject</button></>} {campaign.status === "active" && (delivered === 0 || campaign.delivery?.failed > 0) && <button className="secondary" onClick={() => retryDelivery(campaign.id)}>Retry email delivery</button>} {campaign.status === "active" && delivered > 0 && <button className="approve" onClick={() => simulateOutcome(campaign.id)}>Complete & measure outcome</button>} {approval && approval.status !== "pending" && <span className="decision">Decision: <b>{approval.status}</b>{approval.decided_by ? ` by ${approval.decided_by}` : ""}</span>}</div>
+    <div className="campaign-actions"><button className="secondary" onClick={() => toggle(campaign.id)}>{expanded === campaign.id ? "Hide customers" : `View ${campaign.target_count} customers`}</button>{approval?.status === "pending" && <><button className="approve" disabled={approvalBusy !== null} onClick={() => decide(approval.id, true)}>{approvalBusy === approval.id ? "Saving approval…" : "Approve & send emails"}</button><button className="reject" disabled={approvalBusy !== null} onClick={() => decide(approval.id, false)}>Reject</button></>} {campaign.status === "active" && (delivered === 0 || campaign.delivery?.failed > 0) && <button className="secondary" onClick={() => retryDelivery(campaign.id)}>Retry email delivery</button>} {campaign.status === "active" && delivered > 0 && <button className="approve" onClick={() => simulateOutcome(campaign.id)}>Complete & measure outcome</button>} {approval && approval.status !== "pending" && <span className="decision">Decision: <b>{approval.status}</b>{approval.decided_by ? ` by ${approval.decided_by}` : ""}</span>}</div>
     {expanded === campaign.id && <div className="target-panel">{campaign.target_count === 0 ? <p className="muted">Legacy segment-level campaign: no individual targets were recorded.</p> : rows.length === 0 ? <p className="muted">Loading targets…</p> : <CustomerTable rows={rows}/>}</div>}
   </section>; })}</div>;
 }
