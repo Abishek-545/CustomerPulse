@@ -118,6 +118,9 @@ def test_support_cases_are_visible_in_operations_backlog():
     result = update_operational_task_status(session, tasks[0]["id"], "completed")
     assert result["previous_status"] == "open"
     assert list_operational_tasks(session)["tasks"][0]["status"] == "completed"
+    repeated = create_support_cases_for_customers(session, [customer.id], "A later agent run")
+    assert repeated["created_count"] == 0
+    assert repeated["existing_count"] == 1
 
 
 def test_feedback_campaign_targets_include_cancellation_evidence():
@@ -174,7 +177,10 @@ def test_approval_creates_idempotent_demo_email_and_outcome_learning():
     approval = request_campaign_approval(session, draft["campaign_id"], "Manager gate")
     decision = decide_campaign_approval(session, approval["approval_id"], True, "tester")
     assert decision["email_delivery"]["simulated"] == 1
-    assert session.query(EmailDelivery).one().recipient == "temp66642@gmail.com"
+    delivery = session.query(EmailDelivery).one()
+    assert delivery.recipient == "temp66642@gmail.com"
+    assert "Customer email-demo" in delivery.subject
+    assert f"Campaign {draft['campaign_id']}" in delivery.subject
     repeated = decide_campaign_approval(session, approval["approval_id"], True, "tester")
     assert repeated["idempotent"] is True
     assert repeated["email_delivery"]["simulated"] == 1
@@ -200,6 +206,10 @@ def test_support_and_product_workflows_select_the_next_unhandled_records():
     session.commit()
     create_support_cases_for_customers(session, [customers[0].id], "Proactive high-risk customer review")
     create_product_recovery_tasks(session, [products[0].id])
+    for task in list_operational_tasks(session)["tasks"]:
+        update_operational_task_status(session, task["id"], "completed")
+    assert create_support_cases_for_customers(session, [customers[0].id], "Another review")["created_count"] == 0
+    assert create_product_recovery_tasks(session, [products[0].id])["created_count"] == 0
     next_customers = find_churn_risk_customers(session, limit=10, exclude_open_support=True)["customers"]
     next_products = find_high_cancellation_products(session, limit=10, exclude_open_recovery=True)["products"]
     assert customers[0].id not in {item["id"] for item in next_customers}

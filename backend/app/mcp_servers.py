@@ -180,7 +180,7 @@ def operations_server() -> FastMCP:
 
     @mcp.resource("operations://action-policy")
     def action_policy() -> str:
-        return "Support cases and product recovery tasks are internal reversible records. Customer communications require a manager-approved campaign."
+        return "Support cases and product recovery tasks are internal reversible records. For the static demo snapshot, a completed customer or product is not recreated by a later agent run. Customer communications require a manager-approved campaign."
 
     @mcp.prompt()
     def plan_customer_operations(goal: str) -> str:

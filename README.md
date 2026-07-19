@@ -6,8 +6,8 @@ CustomerPulse is a deployed, autonomous customer-operations platform built with 
 
 - Customer intelligence: rankings, profiles, geography, purchase history, value and inactivity-risk analysis.
 - Retention campaigns: deduplicated customer selection, campaign draft creation, manager approval, email delivery and campaign outcomes.
-- Customer-care triage: creates deduplicated internal support cases for high-risk customers; managers can complete or reopen them.
-- Product recovery: identifies elevated cancellation signals and creates updateable operational recovery tasks.
+- Customer-care triage: creates one internal support case per customer in the static data snapshot; open and completed counts are shown separately, and managers can complete or reopen records.
+- Product recovery: identifies elevated cancellation signals and creates one updateable recovery task per product in the static snapshot.
 - Closed-loop learning: completed campaign conversion and uplift are stored as long-term business memory.
 - Product guidance: a Knowledge Agent explains the application, metrics, safety rules and agent roles.
 
@@ -87,7 +87,7 @@ The application creates additive tables automatically on startup. Production sch
 - Read-only questions cannot create campaigns, support cases or recovery tasks.
 - Campaigns require explicit creation language and human approval.
 - Email delivery is idempotent per campaign target.
-- Campaign and operations writes are deduplicated.
+- Campaign and operations writes are deduplicated; completing a support or product task does not make the same static record eligible again.
 - Customer-row locks reduce competing campaign selection races.
 - Every agent tool call and autonomous decision is auditable.
 - Authentication is intentionally omitted from the public portfolio demo so interviewers can inspect the complete workflow.

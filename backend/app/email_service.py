@@ -16,7 +16,7 @@ from .models import Campaign, CampaignTarget, Customer, EmailDelivery
 
 def _message(campaign: Campaign, customer: Customer) -> tuple[str, str]:
     if campaign.segment == "frequent_cancellers":
-        subject = "Help us improve your CustomerPulse experience"
+        subject = f"CustomerPulse feedback · Customer {customer.external_id} · Campaign {campaign.id}"
         body = f"""Hello Customer {customer.external_id},
 
 We noticed that one or more of your recent orders were cancelled. We would value
@@ -30,7 +30,7 @@ Regards,
 {settings.smtp_from_name}
 """
         return subject, body
-    subject = f"A thank-you offer from CustomerPulse: {campaign.offer}"
+    subject = f"CustomerPulse offer · Customer {customer.external_id} · Campaign {campaign.id}"
     body = f"""Hello Customer {customer.external_id},
 
 Thank you for being a valued customer. We would love to welcome you back.

@@ -35,10 +35,10 @@ def get_customer_by_external_id(session: Session, external_id: str) -> dict:
 def find_churn_risk_customers(session: Session, min_risk: float = 0.65, limit: int = 20, exclude_open_support: bool = False) -> dict:
     query = select(Customer).where(Customer.churn_risk >= min_risk)
     if exclude_open_support:
-        open_cases = select(SupportCase.customer_id).where(SupportCase.status == "open")
-        query = query.where(~Customer.id.in_(open_cases))
+        handled_customers = select(SupportCase.customer_id)
+        query = query.where(~Customer.id.in_(handled_customers))
     rows = session.scalars(query.order_by(Customer.lifetime_value.desc()).limit(limit)).all()
-    result = {"customers": [{"id": c.id, "external_id": c.external_id, "country": c.country, "segment": c.segment, "risk": c.churn_risk, "ltv": float(c.lifetime_value)} for c in rows], "selection_policy": "excludes customers with an open support case" if exclude_open_support else "all qualifying high-risk customers"}
+    result = {"customers": [{"id": c.id, "external_id": c.external_id, "country": c.country, "segment": c.segment, "risk": c.churn_risk, "ltv": float(c.lifetime_value)} for c in rows], "selection_policy": "excludes customers already handled by Customer Care, including completed cases" if exclude_open_support else "all qualifying high-risk customers"}
     return audit(session, "find_churn_risk_customers", {"min_risk": min_risk, "limit": limit, "exclude_open_support": exclude_open_support}, result)
 
 
@@ -122,13 +122,13 @@ def get_product_performance(session: Session, limit: int = 10) -> dict:
 def find_high_cancellation_products(session: Session, threshold: float = 0.10, limit: int = 10, exclude_open_recovery: bool = False) -> dict:
     query = select(Product).where(Product.cancellation_rate >= threshold)
     if exclude_open_recovery:
-        open_tasks = session.scalars(select(OperationalTask).where(OperationalTask.task_type == "product_recovery", OperationalTask.status == "open")).all()
-        blocked_ids = [task.payload.get("product_id") for task in open_tasks if task.payload.get("product_id")]
+        historical_tasks = session.scalars(select(OperationalTask).where(OperationalTask.task_type == "product_recovery")).all()
+        blocked_ids = [task.payload.get("product_id") for task in historical_tasks if task.payload.get("product_id")]
         if blocked_ids:
             query = query.where(~Product.id.in_(blocked_ids))
     rows = session.scalars(query.order_by(Product.cancellation_rate.desc(), Product.id).limit(limit)).all()
     result = {"products": [{"id": p.id, "sku": p.external_sku, "name": p.name, "cancellation_rate": p.cancellation_rate} for p in rows]}
-    result["selection_policy"] = "excludes products with an open recovery task" if exclude_open_recovery else "all qualifying products"
+    result["selection_policy"] = "excludes products already handled by Product Operations, including completed tasks" if exclude_open_recovery else "all qualifying products"
     return audit(session, "find_high_cancellation_products", {"threshold": threshold, "limit": limit, "exclude_open_recovery": exclude_open_recovery}, result)
 
 
@@ -209,7 +209,9 @@ def create_support_cases_for_customers(session: Session, customer_ids: list[int]
     unique_ids = list(dict.fromkeys(customer_ids))
     created, existing_ids = [], []
     for customer_id in unique_ids:
-        existing = session.scalar(select(SupportCase).where(SupportCase.customer_id == customer_id, SupportCase.title == title, SupportCase.status == "open"))
+        # Static demo data has no new-event timestamp, so any historical case for
+        # this customer is treated as already handled, even after completion.
+        existing = session.scalar(select(SupportCase).where(SupportCase.customer_id == customer_id))
         if existing:
             existing_ids.append(existing.id)
             continue
@@ -228,7 +230,8 @@ def create_product_recovery_tasks(session: Session, product_ids: list[int], inve
         product = session.get(Product, product_id)
         if not product:
             continue
-        existing = session.scalar(select(OperationalTask).where(OperationalTask.task_type == "product_recovery", OperationalTask.status == "open", OperationalTask.payload["product_id"].as_integer() == product_id))
+        # Do not recreate completed work for the same static product snapshot.
+        existing = session.scalar(select(OperationalTask).where(OperationalTask.task_type == "product_recovery", OperationalTask.payload["product_id"].as_integer() == product_id))
         if existing:
             existing_ids.append(existing.id)
             continue
