@@ -40,6 +40,18 @@ function App() {
   const [search, setSearch] = useState("");
   const [managerNotice, setManagerNotice] = useState("");
 
+  useEffect(() => {
+    if (!managerNotice) return;
+    const timer = window.setTimeout(() => setManagerNotice(""), 5000);
+    return () => window.clearTimeout(timer);
+  }, [managerNotice]);
+
+  useEffect(() => {
+    if (!error) return;
+    const timer = window.setTimeout(() => setError(""), 8000);
+    return () => window.clearTimeout(timer);
+  }, [error]);
+
   const refresh = async () => {
     try {
       const [summary, customerRows, productRows, runs, gates, campaignRows, logs, taskRows, evaluationRows, capabilities] = await Promise.all([
@@ -99,8 +111,8 @@ function App() {
     </aside>
     <main className="content">
       <header className="topbar"><div><p className="kicker">CUSTOMER INTELLIGENCE PLATFORM</p><h1>{tab === "overview" ? "Operations overview" : tab === "workspace" ? "Multi-agent workspace" : tab === "guide" ? "How CustomerPulse works" : tab[0].toUpperCase() + tab.slice(1)}</h1></div><button className="secondary" onClick={refresh}>↻ Refresh</button></header>
-      {error && <div className="alert"><b>Action needed</b><span>{error}</span><button onClick={() => setError("")}>×</button></div>}
-      {managerNotice && <div className="manager-notice"><b>Manager notification</b><span>{managerNotice}</span><button onClick={() => setManagerNotice("")}>×</button></div>}
+      {error && <div className="alert" role="alert"><b>Action needed</b><span>{error}</span><button aria-label="Close error notification" onClick={() => setError("")}>×</button></div>}
+      {managerNotice && <div className="manager-notice" role="status"><b>Manager notification</b><span>{managerNotice}</span><button aria-label="Close manager notification" onClick={() => setManagerNotice("")}>×</button></div>}
       {tab === "overview" && <Overview dashboard={dashboard} investigations={investigations} campaigns={campaigns} pending={pending} products={products} execute={execute} />}
       {tab === "workspace" && <Workspace query={query} setQuery={setQuery} clearResult={() => setAgentResult(null)} execute={execute} busy={busy} response={agentResult} investigations={investigations} openCampaigns={() => setTab("campaigns")} openOperations={() => setTab("operations")} />}
       {tab === "customers" && <Customers rows={filteredCustomers} search={search} setSearch={setSearch} execute={execute} />}
