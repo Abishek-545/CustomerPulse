@@ -71,9 +71,9 @@ def _execute_action(action: str, state: AgentState) -> tuple[str | None, dict]:
         if state["intent"] == "retention_campaign":
             tool, output = "customer.find_eligible_retention_customers", mcp_client.call_tool("customer.find_eligible_retention_customers", limit=params["limit"])
         else:
-            tool, output = "customer.find_churn_risk_customers", mcp_client.call_tool("customer.find_churn_risk_customers", min_risk=0.65, limit=params["limit"])
+            tool, output = "customer.find_churn_risk_customers", mcp_client.call_tool("customer.find_churn_risk_customers", min_risk=0.65, limit=params["limit"], exclude_open_support=state["intent"] == "support_triage")
     elif action == "product_signals":
-        tool, output = "product.find_high_cancellation_products", mcp_client.call_tool("product.find_high_cancellation_products", threshold=0.10, limit=params["limit"])
+        tool, output = "product.find_high_cancellation_products", mcp_client.call_tool("product.find_high_cancellation_products", threshold=0.10, limit=params["limit"], exclude_open_recovery=state["intent"] == "product_recovery")
     elif action == "memory_search":
         tool, output = "memory.search_memories", mcp_client.call_tool("memory.search_memories", query="campaign outcome offer retention", limit=5)
     elif action == "campaign_draft":
@@ -165,7 +165,13 @@ def response_agent(state: AgentState) -> AgentState:
     elif intent in ("support_triage", "product_recovery"):
         action = "support_cases" if intent == "support_triage" else "product_recovery_tasks"
         data = observations.get(action, {})
-        result = {"kind": intent, "data": data, "agents": agents, "decision_log": state.get("decision_log", []), "summary": f"Autonomous operations completed: {data.get('created_count', 0)} deduplicated internal records created."}
+        created, existing = data.get("created_count", 0), data.get("existing_count", data.get("duplicates_skipped", 0))
+        summary = f"Autonomous operations created {created} new record{'s' if created != 1 else ''}."
+        if existing:
+            summary += f" {existing} matching open record{'s' if existing != 1 else ''} already existed and were not duplicated."
+        if not created and not existing:
+            summary = "No unhandled qualifying records were found, so the agent safely created nothing."
+        result = {"kind": intent, "data": data, "agents": agents, "decision_log": state.get("decision_log", []), "summary": summary}
     else:
         result = {"kind": intent, "data": direct_data, "supporting_evidence": {key: value for key, value in observations.items() if value is not direct_data}, "agents": agents, "decision_log": state.get("decision_log", []), "summary": "Autonomous read-only investigation completed; observations were checked after every tool call." if intent != "campaign_outcome" else "Campaign outcome was completed and its learning was saved to long-term memory."}
     status = state.get("status", "complete")

@@ -46,6 +46,16 @@ TEMPLATES = {
 }
 
 WRITE_ACTIONS = {"campaign_draft", "campaign_approval", "support_cases", "product_recovery_tasks", "campaign_outcome"}
+DEPENDENCY_PLANS = {"churn_analysis", "retention_campaign", "support_triage", "product_recovery", "campaign_outcome"}
+
+
+def normalize_actions(route: AgentRoute, proposed: list[str]) -> list[str]:
+    """Keep LLM autonomy inside dependency-safe plans for multi-step workflows."""
+    if route.intent in DEPENDENCY_PLANS:
+        return list(TEMPLATES[route.intent])
+    allowed = _allowed(route)
+    actions = [action for action in proposed if action in allowed]
+    return actions or list(TEMPLATES[route.intent])
 
 
 def _allowed(route: AgentRoute) -> set[str]:
@@ -78,10 +88,7 @@ def build_plan(goal: str, route: AgentRoute) -> list[dict[str, str]]:
             ],
         )
         payload = json.loads(response.choices[0].message.content or "{}")
-        actions = [item for item in payload.get("actions", []) if item in allowed]
-        required_writes = [item for item in TEMPLATES[route.intent] if item in WRITE_ACTIONS]
-        if not actions or any(item not in actions for item in required_writes):
-            return fallback
+        actions = normalize_actions(route, payload.get("actions", []))
         return _steps(actions[: settings.max_agent_steps], str(payload.get("rationale") or route.rationale))
     except Exception:
         return fallback

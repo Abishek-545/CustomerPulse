@@ -32,21 +32,25 @@ def get_customer_by_external_id(session: Session, external_id: str) -> dict:
     return get_customer_profile(session, customer.id)
 
 
-def find_churn_risk_customers(session: Session, min_risk: float = 0.65, limit: int = 20) -> dict:
-    rows = session.scalars(select(Customer).where(Customer.churn_risk >= min_risk).order_by(Customer.lifetime_value.desc()).limit(limit)).all()
-    result = {"customers": [{"id": c.id, "external_id": c.external_id, "segment": c.segment, "risk": c.churn_risk, "ltv": float(c.lifetime_value)} for c in rows]}
-    return audit(session, "find_churn_risk_customers", {"min_risk": min_risk, "limit": limit}, result)
+def find_churn_risk_customers(session: Session, min_risk: float = 0.65, limit: int = 20, exclude_open_support: bool = False) -> dict:
+    query = select(Customer).where(Customer.churn_risk >= min_risk)
+    if exclude_open_support:
+        open_cases = select(SupportCase.customer_id).where(SupportCase.status == "open")
+        query = query.where(~Customer.id.in_(open_cases))
+    rows = session.scalars(query.order_by(Customer.lifetime_value.desc()).limit(limit)).all()
+    result = {"customers": [{"id": c.id, "external_id": c.external_id, "country": c.country, "segment": c.segment, "risk": c.churn_risk, "ltv": float(c.lifetime_value)} for c in rows], "selection_policy": "excludes customers with an open support case" if exclude_open_support else "all qualifying high-risk customers"}
+    return audit(session, "find_churn_risk_customers", {"min_risk": min_risk, "limit": limit, "exclude_open_support": exclude_open_support}, result)
 
 
 def find_eligible_retention_customers(session: Session, limit: int = 20) -> dict:
-    blocked = select(CampaignTarget.customer_id).join(Campaign).where(Campaign.status.in_(["draft", "active"]))
+    blocked = select(CampaignTarget.customer_id)
     rows = session.scalars(
         select(Customer)
         .where(Customer.segment == "at_risk_high_value", Customer.churn_risk >= 0.65, ~Customer.id.in_(blocked))
         .order_by(Customer.lifetime_value.desc())
         .limit(limit)
     ).all()
-    result = {"customers": [{"id": c.id, "external_id": c.external_id, "segment": c.segment, "risk": c.churn_risk, "ltv": float(c.lifetime_value)} for c in rows]}
+    result = {"customers": [{"id": c.id, "external_id": c.external_id, "country": c.country, "segment": c.segment, "risk": c.churn_risk, "ltv": float(c.lifetime_value)} for c in rows], "selection_policy": "excludes every customer targeted by any earlier campaign"}
     return audit(session, "find_eligible_retention_customers", {"limit": limit}, result)
 
 
@@ -89,10 +93,17 @@ def get_product_performance(session: Session, limit: int = 10) -> dict:
     return audit(session, "get_product_performance", {"limit": limit}, result)
 
 
-def find_high_cancellation_products(session: Session, threshold: float = 0.10, limit: int = 10) -> dict:
-    rows = session.scalars(select(Product).where(Product.cancellation_rate >= threshold).order_by(Product.cancellation_rate.desc()).limit(limit)).all()
+def find_high_cancellation_products(session: Session, threshold: float = 0.10, limit: int = 10, exclude_open_recovery: bool = False) -> dict:
+    query = select(Product).where(Product.cancellation_rate >= threshold)
+    if exclude_open_recovery:
+        open_tasks = session.scalars(select(OperationalTask).where(OperationalTask.task_type == "product_recovery", OperationalTask.status == "open")).all()
+        blocked_ids = [task.payload.get("product_id") for task in open_tasks if task.payload.get("product_id")]
+        if blocked_ids:
+            query = query.where(~Product.id.in_(blocked_ids))
+    rows = session.scalars(query.order_by(Product.cancellation_rate.desc(), Product.id).limit(limit)).all()
     result = {"products": [{"id": p.id, "sku": p.external_sku, "name": p.name, "cancellation_rate": p.cancellation_rate} for p in rows]}
-    return audit(session, "find_high_cancellation_products", {"threshold": threshold, "limit": limit}, result)
+    result["selection_policy"] = "excludes products with an open recovery task" if exclude_open_recovery else "all qualifying products"
+    return audit(session, "find_high_cancellation_products", {"threshold": threshold, "limit": limit, "exclude_open_recovery": exclude_open_recovery}, result)
 
 
 def create_campaign_draft(session: Session, name: str, segment: str, offer: str, investigation_id: int | None = None, customer_ids: list[int] | None = None) -> dict:
@@ -100,10 +111,10 @@ def create_campaign_draft(session: Session, name: str, segment: str, offer: str,
     if selected:
         # Serialize competing campaign writers for the selected customers.
         session.scalars(select(Customer.id).where(Customer.id.in_(selected)).with_for_update()).all()
-    already_targeted = set(session.scalars(select(CampaignTarget.customer_id).join(Campaign).where(Campaign.status.in_(["draft", "active"]))).all())
+    already_targeted = set(session.scalars(select(CampaignTarget.customer_id)).all())
     eligible = list(dict.fromkeys(customer_id for customer_id in selected if customer_id not in already_targeted))
     if selected and not eligible:
-        raise ValueError("Every selected customer already belongs to a draft or active campaign")
+        raise ValueError("Every selected customer has already been targeted by an earlier campaign")
     campaign = Campaign(name=name, segment=segment, offer=offer, investigation_id=investigation_id)
     session.add(campaign)
     session.flush()
@@ -133,6 +144,11 @@ def decide_campaign_approval(session: Session, approval_id: int, approved: bool,
     target_status = "approved" if approved else "rejected"
     for target in session.scalars(select(CampaignTarget).where(CampaignTarget.campaign_id == campaign.id)).all():
         target.status = target_status
+    if campaign.investigation_id:
+        investigation = session.get(Investigation, campaign.investigation_id)
+        if investigation:
+            investigation.status = "complete" if approved else "rejected"
+            investigation.findings = list(investigation.findings or []) + [f"Manager {request.status} campaign {campaign.id}."]
     session.commit()
     email_result = deliver_campaign_emails(session, campaign.id) if approved else None
     return audit(session, "decide_campaign_approval", {"approval_id": approval_id, "approved": approved}, {"campaign_id": campaign.id, "campaign_status": campaign.status, "email_delivery": email_result})
@@ -147,27 +163,30 @@ def create_support_case(session: Session, customer_id: int, title: str, priority
 
 def create_support_cases_for_customers(session: Session, customer_ids: list[int], title: str, priority: str = "high", investigation_id: int | None = None) -> dict:
     unique_ids = list(dict.fromkeys(customer_ids))
-    created = []
+    created, existing_ids = [], []
     for customer_id in unique_ids:
         existing = session.scalar(select(SupportCase).where(SupportCase.customer_id == customer_id, SupportCase.title == title, SupportCase.status == "open"))
         if existing:
+            existing_ids.append(existing.id)
             continue
         case = SupportCase(customer_id=customer_id, title=title, priority=priority)
         session.add(case)
         session.flush()
         created.append(case.id)
     session.commit()
-    return audit(session, "create_support_cases_for_customers", {"customer_ids": unique_ids, "title": title, "priority": priority}, {"created_count": len(created), "case_ids": created, "duplicates_skipped": len(unique_ids) - len(created)}, investigation_id)
+    return audit(session, "create_support_cases_for_customers", {"customer_ids": unique_ids, "title": title, "priority": priority}, {"requested_count": len(unique_ids), "created_count": len(created), "case_ids": created, "existing_count": len(existing_ids), "existing_case_ids": existing_ids, "duplicates_skipped": len(existing_ids)}, investigation_id)
 
 
 def create_product_recovery_tasks(session: Session, product_ids: list[int], investigation_id: int | None = None) -> dict:
-    created = []
-    for product_id in list(dict.fromkeys(product_ids)):
+    created, existing_ids = [], []
+    unique_ids = list(dict.fromkeys(product_ids))
+    for product_id in unique_ids:
         product = session.get(Product, product_id)
         if not product:
             continue
         existing = session.scalar(select(OperationalTask).where(OperationalTask.task_type == "product_recovery", OperationalTask.status == "open", OperationalTask.payload["product_id"].as_integer() == product_id))
         if existing:
+            existing_ids.append(existing.id)
             continue
         task = OperationalTask(
             investigation_id=investigation_id,
@@ -181,7 +200,7 @@ def create_product_recovery_tasks(session: Session, product_ids: list[int], inve
         session.flush()
         created.append(task.id)
     session.commit()
-    return audit(session, "create_product_recovery_tasks", {"product_ids": product_ids}, {"created_count": len(created), "task_ids": created}, investigation_id)
+    return audit(session, "create_product_recovery_tasks", {"product_ids": unique_ids}, {"requested_count": len(unique_ids), "created_count": len(created), "task_ids": created, "existing_count": len(existing_ids), "existing_task_ids": existing_ids, "duplicates_skipped": len(existing_ids)}, investigation_id)
 
 
 def list_operational_tasks(session: Session, limit: int = 50) -> dict:
@@ -211,11 +230,21 @@ def campaign_delivery_status(session: Session, campaign_id: int) -> dict:
     return delivery_summary(session, campaign_id)
 
 
+def retry_campaign_delivery(session: Session, campaign_id: int) -> dict:
+    campaign = session.get(Campaign, campaign_id)
+    if not campaign or campaign.status != "active":
+        raise ValueError("Only an approved active campaign can retry email delivery")
+    result = deliver_campaign_emails(session, campaign_id)
+    return audit(session, "retry_campaign_delivery", {"campaign_id": campaign_id}, result, campaign.investigation_id)
+
+
 def simulate_campaign_outcome(session: Session, campaign_id: int) -> dict:
     campaign = session.get(Campaign, campaign_id)
     if not campaign or campaign.status not in ("active", "completed"):
         raise ValueError("Only an active campaign can collect outcomes")
     delivered = session.scalar(select(func.count()).select_from(EmailDelivery).where(EmailDelivery.campaign_id == campaign_id, EmailDelivery.status.in_(["sent", "simulated"]))) or 0
+    if delivered == 0:
+        raise ValueError("Campaign outcome cannot be measured until at least one campaign email is delivered")
     opened = round(delivered * 0.70)
     clicked = round(delivered * 0.40)
     converted = round(delivered * 0.20)
@@ -299,7 +328,7 @@ def explain_platform(session: Session, question: str = "What does this app do?")
 
 
 def dashboard_summary(session: Session) -> dict:
-    blocked = select(CampaignTarget.customer_id).join(Campaign).where(Campaign.status.in_(["draft", "active"]))
+    blocked = select(CampaignTarget.customer_id)
     return {
         "customers": session.scalar(select(func.count()).select_from(Customer)) or 0,
         "customers_with_email": session.scalar(select(func.count()).select_from(Customer).where(Customer.email.is_not(None), Customer.email != "")) or 0,
@@ -308,7 +337,7 @@ def dashboard_summary(session: Session) -> dict:
         "high_risk_customers": session.scalar(select(func.count()).select_from(Customer).where(Customer.churn_risk >= 0.65)) or 0,
         "high_value_at_risk": session.scalar(select(func.count()).select_from(Customer).where(Customer.segment == "at_risk_high_value")) or 0,
         "eligible_retention_customers": session.scalar(select(func.count()).select_from(Customer).where(Customer.segment == "at_risk_high_value", ~Customer.id.in_(blocked))) or 0,
-        "currently_targeted_customers": session.scalar(select(func.count(func.distinct(CampaignTarget.customer_id))).join(Campaign).where(Campaign.status.in_(["draft", "active"]))) or 0,
+        "currently_targeted_customers": session.scalar(select(func.count(func.distinct(CampaignTarget.customer_id)))) or 0,
         "pending_approvals": session.scalar(select(func.count()).select_from(ApprovalRequest).where(ApprovalRequest.status == "pending")) or 0,
         "emails_sent": session.scalar(select(func.count()).select_from(EmailDelivery).where(EmailDelivery.status == "sent")) or 0,
         "emails_simulated": session.scalar(select(func.count()).select_from(EmailDelivery).where(EmailDelivery.status == "simulated")) or 0,

@@ -42,21 +42,22 @@ def deliver_campaign_emails(session: Session, campaign_id: int) -> dict:
         .where(CampaignTarget.campaign_id == campaign_id)
         .order_by(CampaignTarget.id)
     ).all()
-    existing_target_ids = set(session.scalars(select(EmailDelivery.campaign_target_id).where(EmailDelivery.campaign_id == campaign_id)).all())
+    existing = {
+        delivery.campaign_target_id: delivery
+        for delivery in session.scalars(select(EmailDelivery).where(EmailDelivery.campaign_id == campaign_id)).all()
+    }
     deliveries: list[EmailDelivery] = []
     for target, customer in rows:
-        if target.id in existing_target_ids:
+        previous = existing.get(target.id)
+        if previous and previous.status in {"sent", "simulated"}:
             continue
         subject, body = _message(campaign, customer)
-        delivery = EmailDelivery(
-            campaign_id=campaign.id,
-            campaign_target_id=target.id,
-            customer_id=customer.id,
-            recipient=customer.email or settings.demo_recipient_email,
-            subject=subject,
-            body=body,
-        )
-        session.add(delivery)
+        delivery = previous or EmailDelivery(campaign_id=campaign.id, campaign_target_id=target.id, customer_id=customer.id)
+        delivery.recipient = customer.email or settings.demo_recipient_email
+        delivery.subject, delivery.body = subject, body
+        delivery.status, delivery.error = "queued", None
+        if previous is None:
+            session.add(delivery)
         deliveries.append(delivery)
     session.commit()
 

@@ -17,9 +17,9 @@ def customer_server() -> FastMCP:
         return f"Investigate the {segment} customer segment. Use customer tools, cite observations, and do not contact customers."
 
     @mcp.tool()
-    def find_churn_risk_customers(min_risk: float = 0.65, limit: int = 20) -> dict:
+    def find_churn_risk_customers(min_risk: float = 0.65, limit: int = 20, exclude_open_support: bool = False) -> dict:
         with SessionLocal() as session:
-            return domain.find_churn_risk_customers(session, min_risk, limit)
+            return domain.find_churn_risk_customers(session, min_risk, limit, exclude_open_support)
 
     @mcp.tool()
     def find_eligible_retention_customers(limit: int = 20) -> dict:
@@ -80,9 +80,9 @@ def product_server() -> FastMCP:
             return domain.get_product_performance(session, limit)
 
     @mcp.tool()
-    def find_high_cancellation_products(threshold: float = 0.10, limit: int = 10) -> dict:
+    def find_high_cancellation_products(threshold: float = 0.10, limit: int = 10, exclude_open_recovery: bool = False) -> dict:
         with SessionLocal() as session:
-            return domain.find_high_cancellation_products(session, threshold, limit)
+            return domain.find_high_cancellation_products(session, threshold, limit, exclude_open_recovery)
     return mcp
 
 

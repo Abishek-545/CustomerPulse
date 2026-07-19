@@ -1,9 +1,10 @@
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 from app.db import Base
-from app.domain import create_campaign_draft, create_support_cases_for_customers, dashboard_summary, decide_campaign_approval, explain_platform, find_churn_risk_customers, find_eligible_retention_customers, list_operational_tasks, request_campaign_approval, simulate_campaign_outcome
+from app.domain import create_campaign_draft, create_product_recovery_tasks, create_support_cases_for_customers, dashboard_summary, decide_campaign_approval, explain_platform, find_churn_risk_customers, find_eligible_retention_customers, find_high_cancellation_products, list_operational_tasks, request_campaign_approval, retry_campaign_delivery, simulate_campaign_outcome
 from app.evaluations import run_offline_evaluations
-from app.models import CampaignTarget, Customer, EmailDelivery, Memory
+from app.models import CampaignTarget, Customer, EmailDelivery, Memory, Product
+from app.planner import TEMPLATES, normalize_actions
 from app.reasoner import route_goal
 from app.config import settings
 from app.schema_migrations import migrate_customer_email
@@ -110,6 +111,68 @@ def test_approval_creates_idempotent_demo_email_and_outcome_learning():
     assert outcome["delivered"] == 1
     assert outcome["status"] == "complete"
     assert session.query(Memory).filter_by(category="campaign_outcome").count() == 1
+
+
+def test_dependency_sensitive_llm_plan_is_normalized():
+    route = route_goal("Create a retention campaign for 10 high-value customers")
+    assert normalize_actions(route, ["top_customers", "campaign_draft"]) == TEMPLATES["retention_campaign"]
+
+
+def test_support_and_product_workflows_select_the_next_unhandled_records():
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine)()
+    customers = [Customer(external_id=f"risk-{index}", country="UK", churn_risk=0.9, lifetime_value=500-index) for index in range(3)]
+    products = [Product(external_sku=f"sku-{index}", name=f"Product {index}", cancellation_rate=0.5-index/10, sales_trend=-0.2) for index in range(3)]
+    session.add_all(customers + products)
+    session.commit()
+    create_support_cases_for_customers(session, [customers[0].id], "Proactive high-risk customer review")
+    create_product_recovery_tasks(session, [products[0].id])
+    next_customers = find_churn_risk_customers(session, limit=10, exclude_open_support=True)["customers"]
+    next_products = find_high_cancellation_products(session, limit=10, exclude_open_recovery=True)["products"]
+    assert customers[0].id not in {item["id"] for item in next_customers}
+    assert products[0].id not in {item["id"] for item in next_products}
+    assert len(next_customers) == 2
+    assert len(next_products) == 2
+
+
+def test_failed_email_delivery_can_be_retried_without_duplicate_rows():
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine)()
+    settings.email_mode = "log"
+    customer = Customer(external_id="retry-demo", country="UK", segment="at_risk_high_value", churn_risk=0.9, lifetime_value=500)
+    session.add(customer)
+    session.commit()
+    draft = create_campaign_draft(session, "Retry", "at_risk_high_value", "10% discount", customer_ids=[customer.id])
+    approval = request_campaign_approval(session, draft["campaign_id"], "Manager gate")
+    decide_campaign_approval(session, approval["approval_id"], True, "tester")
+    delivery = session.query(EmailDelivery).one()
+    delivery.status, delivery.error = "failed", "temporary SMTP failure"
+    session.commit()
+    result = retry_campaign_delivery(session, draft["campaign_id"])
+    assert result["simulated"] == 1
+    assert result["failed"] == 0
+    assert session.query(EmailDelivery).count() == 1
+
+
+def test_outcome_requires_real_or_simulated_delivery():
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine)()
+    customer = Customer(external_id="no-email", country="UK", segment="at_risk_high_value", churn_risk=0.9, lifetime_value=500)
+    session.add(customer)
+    session.commit()
+    draft = create_campaign_draft(session, "No delivery", "at_risk_high_value", "10% discount", customer_ids=[customer.id])
+    from app.models import Campaign
+    campaign = session.get(Campaign, draft["campaign_id"])
+    campaign.status = "active"
+    session.commit()
+    try:
+        simulate_campaign_outcome(session, campaign.id)
+        assert False, "outcome must require delivery evidence"
+    except ValueError as error:
+        assert "email is delivered" in str(error)
 
 
 def test_40_case_agent_evaluation_suite_is_green():

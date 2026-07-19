@@ -162,6 +162,14 @@ def campaign_deliveries(campaign_id: int, session: Session = Depends(get_session
     return domain.campaign_delivery_status(session, campaign_id)
 
 
+@app.post("/api/campaigns/{campaign_id}/deliver")
+def campaign_retry_delivery(campaign_id: int, session: Session = Depends(get_session)):
+    try:
+        return domain.retry_campaign_delivery(session, campaign_id)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
 @app.post("/api/campaigns/{campaign_id}/simulate-outcome")
 def campaign_simulate_outcome(campaign_id: int, session: Session = Depends(get_session)):
     try:
