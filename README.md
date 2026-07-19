@@ -63,6 +63,8 @@ Evaluations run from the Quality & MCP screen and are stored in PostgreSQL. The 
 
 The inactivity risk score is a relative rank, not a churn probability: 75% comes from recency percentile and 25% from completed-order-frequency percentile, bounded from 5 to 95. This avoids presenting every old record as an unsupported 95% prediction.
 
+Product completed-sales change compares completed units in the newer half of the imported dataset timeline with the earlier half. It is recalculated at API startup; 0% means unchanged completed sales or no completed sales, not a missing hard-coded value.
+
 ## Data and database CRUD
 
 The project uses the UCI Online Retail dataset and persists customers, products, invoices, campaign targets, approvals, email deliveries, outcomes, support cases, operational tasks, agent steps, memories, evaluations and audit events.

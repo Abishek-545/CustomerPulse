@@ -70,3 +70,43 @@ def recalculate_customer_risk(engine: Engine) -> None:
             UPDATE customers c SET churn_risk = 0.05
             WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id)
         """))
+
+
+def recalculate_product_sales_trends(engine: Engine) -> None:
+    """Compare completed units in the newer and earlier halves of the dataset.
+
+    The UCI dataset is historical, so wall-clock windows would incorrectly make
+    every product look inactive. Splitting its observed timeline in half creates
+    an honest, reproducible relative trend for this static snapshot.
+    """
+    if engine.dialect.name != "postgresql":
+        return
+    with engine.begin() as connection:
+        connection.execute(text("""
+            WITH bounds AS (
+                SELECT MIN(order_date) AS first_date, MAX(order_date) AS last_date
+                FROM orders WHERE status = 'completed'
+            ), periods AS (
+                SELECT first_date + ((last_date - first_date) / 2) AS midpoint
+                FROM bounds
+            ), stats AS (
+                SELECT oi.product_id,
+                       SUM(CASE WHEN o.status = 'completed' AND o.order_date <= periods.midpoint
+                                THEN GREATEST(oi.quantity, 0) ELSE 0 END)::numeric AS earlier_units,
+                       SUM(CASE WHEN o.status = 'completed' AND o.order_date > periods.midpoint
+                                THEN GREATEST(oi.quantity, 0) ELSE 0 END)::numeric AS newer_units
+                FROM order_items oi
+                JOIN orders o ON o.id = oi.order_id
+                CROSS JOIN periods
+                GROUP BY oi.product_id
+            )
+            UPDATE products p SET sales_trend = ROUND(
+                CASE
+                    WHEN stats.earlier_units > 0 THEN
+                        GREATEST(-1, LEAST(5, (stats.newer_units - stats.earlier_units) / stats.earlier_units))
+                    WHEN stats.newer_units > 0 THEN 1
+                    ELSE 0
+                END, 3
+            )
+            FROM stats WHERE p.id = stats.product_id
+        """))

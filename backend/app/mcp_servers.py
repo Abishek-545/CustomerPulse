@@ -78,7 +78,7 @@ def product_server() -> FastMCP:
 
     @mcp.resource("product://metric-definitions")
     def metric_definitions() -> str:
-        return "cancellation_rate is cancelled orders / total orders; sales_trend is recent period growth, where negative values indicate decline."
+        return "cancellation_rate is cancelled orders / total orders. sales_trend compares completed units in the newer half of the imported dataset with its earlier half; negative values indicate decline, and zero can mean unchanged sales or no completed sales."
 
     @mcp.prompt()
     def investigate_product_decline() -> str:

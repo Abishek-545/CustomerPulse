@@ -5,6 +5,7 @@ emails and consent management are added. Delivery is idempotent per campaign tar
 """
 from datetime import datetime
 from email.message import EmailMessage
+from email.utils import formatdate, make_msgid
 import smtplib
 
 from sqlalchemy import func, select
@@ -91,6 +92,9 @@ def deliver_campaign_emails(session: Session, campaign_id: int) -> dict:
                         message["From"] = f"{settings.smtp_from_name} <{settings.smtp_from_email or settings.smtp_username}>"
                         message["To"] = delivery.recipient
                         message["Subject"] = delivery.subject
+                        message["Date"] = formatdate(localtime=False, usegmt=True)
+                        sender_domain = (settings.smtp_from_email or settings.smtp_username or "customerpulse.local").split("@")[-1]
+                        message["Message-ID"] = make_msgid(domain=sender_domain)
                         message.set_content(delivery.body)
                         try:
                             smtp.send_message(message)
@@ -126,7 +130,8 @@ def delivery_summary(session: Session, campaign_id: int) -> dict:
         "total": total,
         "queued": counts.get("queued", 0),
         "sent": counts.get("sent", 0),
+        "provider_accepted": counts.get("sent", 0),
         "simulated": counts.get("simulated", 0),
         "failed": counts.get("failed", 0),
-        "manager_notification": f"Email processing finished for {total} campaign customers: {counts.get('sent', 0)} sent, {counts.get('simulated', 0)} simulated, {counts.get('failed', 0)} failed.",
+        "manager_notification": f"Email processing finished for {total} campaign customers: {counts.get('sent', 0)} accepted by SMTP, {counts.get('simulated', 0)} simulated, {counts.get('failed', 0)} failed. SMTP acceptance does not guarantee inbox placement.",
     }

@@ -15,6 +15,7 @@ from sqlalchemy import select, text
 
 from .db import Base, SessionLocal, engine
 from .models import Customer, Order, OrderItem, Product
+from .schema_migrations import recalculate_product_sales_trends
 
 UCI_URL = "https://archive.ics.uci.edu/ml/machine-learning-databases/00352/Online%20Retail.xlsx"
 BATCH_INVOICES = 200
@@ -151,6 +152,7 @@ def import_data() -> None:
                     session.expunge_all()
             session.commit()
             update_operational_metrics(session)
+            recalculate_product_sales_trends(engine)
         workbook.close()
     finally:
         source_file.unlink(missing_ok=True)
