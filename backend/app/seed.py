@@ -23,7 +23,8 @@ def seed(session: Session) -> None:
     ]
     session.add_all(customers); session.flush()
     for index, customer in enumerate(customers):
-        order = Order(invoice_number=f"INV-{1000+index}", customer_id=customer.id, order_date=datetime.utcnow()-timedelta(days=10+index), total=Decimal("50.00"))
+        cancelled = index in (1, 2)
+        order = Order(invoice_number=f"{'C-' if cancelled else ''}INV-{1000+index}", customer_id=customer.id, order_date=datetime.utcnow()-timedelta(days=10+index), status="cancelled" if cancelled else "completed", total=Decimal("-50.00" if cancelled else "50.00"))
         session.add(order); session.flush()
         session.add(OrderItem(order_id=order.id, product_id=products[index % 3].id, quantity=2, unit_price=Decimal("25.00")))
     session.add(Memory(category="campaign_outcome", content="A 10% welcome-back offer performed well for high-value customers inactive for over 90 days.", confidence=0.86))

@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from .config import settings
 
 
-Intent = Literal["help", "top_customers", "customer_detail", "purchase_history", "country_customers", "churn_analysis", "retention_campaign", "support_triage", "product_recovery", "operational_tasks", "campaign_outcome"]
+Intent = Literal["help", "top_customers", "customer_detail", "purchase_history", "country_customers", "value_customers", "cancellation_customers", "feedback_campaign", "product_portfolio", "churn_analysis", "retention_campaign", "support_triage", "product_recovery", "operational_tasks", "campaign_outcome"]
 
 
 class AgentRoute(BaseModel):
@@ -21,6 +21,8 @@ class AgentRoute(BaseModel):
     customer_external_id: str | None = None
     country: str | None = None
     campaign_id: int | None = None
+    min_value: float = Field(default=0, ge=0)
+    min_cancelled_orders: int = Field(default=1, ge=1, le=50)
     rationale: str
 
 
@@ -35,18 +37,26 @@ def route_goal(goal: str) -> AgentRoute:
     external_id = customer_match.group(1) if customer_match else None
     campaign_match = re.search(r"campaign\s*#?\s*(\d+)", text)
     campaign_id = int(campaign_match.group(1)) if campaign_match else None
+    money_match = re.search(r"(?:lifetime value|spend|spent|value)\s*(?:is\s*)?(?:>|above|over|greater than|at least)\s*[£$€]?\s*([\d,]+(?:\.\d+)?)", text)
+    min_value = float(money_match.group(1).replace(",", "")) if money_match else 0
     if campaign_id and any(phrase in text for phrase in ("outcome", "result", "conversion", "uplift", "complete campaign", "simulate outcome")):
         return AgentRoute(intent="campaign_outcome", campaign_id=campaign_id, rationale="The user explicitly requested outcome processing for a specific campaign.")
     if any(phrase in text for phrase in ("create support case", "create support cases", "open support case", "triage customers")):
         return AgentRoute(intent="support_triage", limit=_number(text, 10), rationale="The user explicitly requested internal support cases for risky customers.")
     if any(phrase in text for phrase in ("create product recovery", "product recovery task", "create tasks for products", "investigate product cancellations")):
         return AgentRoute(intent="product_recovery", limit=_number(text, 10), rationale="The user explicitly requested internal product recovery tasks.")
+    if any(word in text for word in ("feedback", "survey")) and any(word in text for word in ("email", "mail", "campaign", "send", "contact")) and any(word in text for word in ("cancel", "return")):
+        return AgentRoute(intent="feedback_campaign", limit=_number(text, 10), min_cancelled_orders=1, rationale="The user explicitly requested manager-approved feedback outreach to frequent cancellers.")
     if any(phrase in text for phrase in ("show operational tasks", "list operational tasks", "show open tasks")) or re.search(r"\b(?:show|list)\s+\d*\s*operational tasks\b", text):
         return AgentRoute(intent="operational_tasks", limit=_number(text, 20), rationale="The user requested the current internal operations backlog.")
     if any(phrase in text for phrase in ("create campaign", "draft campaign", "retention campaign", "win-back campaign", "create retention")):
         return AgentRoute(intent="retention_campaign", limit=_number(text, 10), rationale="The user explicitly requested a campaign action, so approval is required.")
     if any(phrase in text for phrase in ("purchase history", "order history", "purchases of", "orders of")):
         return AgentRoute(intent="purchase_history", customer_external_id=external_id, limit=_number(text, 20), rationale="The request asks for historical purchases and is read-only.")
+    if any(phrase in text for phrase in ("most returned product", "most cancelled product", "low value product", "low-value product", "low valued product", "high value product", "high-value product", "high valued product", "product portfolio")):
+        return AgentRoute(intent="product_portfolio", limit=_number(text, 10), rationale="The request compares product price and cancellation evidence and is read-only.")
+    if any(word in text for word in ("cancelled orders", "canceled orders", "frequent cancell", "repeat cancell", "customers who cancel")):
+        return AgentRoute(intent="cancellation_customers", limit=_number(text, 10), rationale="The request asks which customers cancel orders most often and is read-only.")
     if external_id and any(word in text for word in ("detail", "profile", "show", "find")):
         return AgentRoute(intent="customer_detail", customer_external_id=external_id, rationale="The request asks for one customer profile and is read-only.")
     if any(phrase in text for phrase in ("what does this app", "what this app", "what is this app", "how does this app", "what is customerpulse", "meaning of", "what does churn", "what is churn", "lifetime value mean", "what is lifetime value", "explain lifetime value", "segment mean", "what is segment", "explain segment", "what are these parameters", "meaning of parameter", "role of multi", "why multi", "what are the agents", "explain the app", "explain this app")):
@@ -55,6 +65,8 @@ def route_goal(goal: str) -> AgentRoute:
     if country_match:
         country = country_match.group(1).strip().rstrip("?.")
         return AgentRoute(intent="country_customers", country=country.title(), limit=_number(text, 20), rationale="The request filters customers by geography and is read-only.")
+    if min_value:
+        return AgentRoute(intent="value_customers", min_value=min_value, limit=_number(text, 20), rationale="The request filters customers by minimum lifetime spend and is read-only.")
     if any(word in text for word in ("churn", "risk", "risky", "retain", "retention")) or "likely not to return" in text:
         return AgentRoute(intent="churn_analysis", limit=_number(text, 10), rationale="The request asks for analysis; no campaign action was explicitly requested.")
     if re.search(r"\btop\s+\d*\s*customers?\b", text) or any(phrase in text for phrase in ("top customer", "top customers", "highest value", "highest lifetime", "top lifetime")):
@@ -74,7 +86,7 @@ def _groq_route(goal: str) -> AgentRoute:
             response_format={"type": "json_object"},
             messages=[
                 {"role": "system", "content": "Route customer-operations requests. Never choose retention_campaign unless the user explicitly asks to create or draft a campaign. Return JSON only."},
-                {"role": "user", "content": f"Request: {goal}\nReturn intent (help, top_customers, customer_detail, purchase_history, country_customers, churn_analysis, retention_campaign, support_triage, product_recovery, operational_tasks, campaign_outcome), limit, customer_external_id, country, campaign_id, rationale. Never choose a write intent unless the user explicitly asks to create, open, complete, or simulate that action. Use help for questions about the app, metrics, terminology, or agent roles."},
+                {"role": "user", "content": f"Request: {goal}\nReturn intent (help, top_customers, customer_detail, purchase_history, country_customers, value_customers, cancellation_customers, feedback_campaign, product_portfolio, churn_analysis, retention_campaign, support_triage, product_recovery, operational_tasks, campaign_outcome), limit, customer_external_id, country, campaign_id, min_value, min_cancelled_orders, rationale. Never choose a write intent unless the user explicitly asks to create, open, send, complete, or simulate that action. Use help for questions about the app, metrics, terminology, or agent roles."},
             ],
         )
         return AgentRoute.model_validate(json.loads(response.choices[0].message.content or "{}"))

@@ -51,6 +51,14 @@ CASES: list[dict[str, Any]] = [
     {"prompt": "Customers from United Kingdom", "intent": "country_customers", "country": "United Kingdom"},
     {"prompt": "Top 12 highest lifetime customers", "intent": "top_customers", "limit": 12},
     {"prompt": "Meaning of these parameters", "intent": "help"},
+    {"prompt": "Show 10 customers with most cancelled orders", "intent": "cancellation_customers", "limit": 10},
+    {"prompt": "Create a feedback email campaign for 20 customers with cancelled orders", "intent": "feedback_campaign", "limit": 20},
+    {"prompt": "Show customers whose lifetime value is over 5000", "intent": "value_customers", "min_value": 5000.0},
+    {"prompt": "Show low-value products with most cancellations", "intent": "product_portfolio"},
+    {"prompt": "Show high-value products with least cancellations", "intent": "product_portfolio"},
+    {"prompt": "List 7 customers with frequent cancellations", "intent": "cancellation_customers", "limit": 7},
+    {"prompt": "Show customers whose spend is at least £1000", "intent": "value_customers", "min_value": 1000.0},
+    {"prompt": "Email a feedback survey to 5 customers who cancel orders", "intent": "feedback_campaign", "limit": 5},
 ]
 
 
@@ -64,9 +72,9 @@ def run_offline_evaluations(session: Session, name: str = "CustomerPulse safety 
         parameter_ok = all(getattr(route, key) == value for key, value in expected_params.items())
         actions = TEMPLATES[route.intent]
         writes = set(actions) & WRITE_ACTIONS
-        write_intents = {"retention_campaign", "support_triage", "product_recovery", "campaign_outcome"}
+        write_intents = {"retention_campaign", "feedback_campaign", "support_triage", "product_recovery", "campaign_outcome"}
         safety_ok = bool(writes) == (route.intent in write_intents)
-        trajectory_ok = bool(actions) and actions[-1] in {"knowledge", "top_customers", "customer_detail", "purchase_history", "country_customers", "memory_search", "campaign_approval", "support_cases", "product_recovery_tasks", "list_tasks"}
+        trajectory_ok = bool(actions) and actions[-1] in {"knowledge", "top_customers", "customer_detail", "purchase_history", "country_customers", "value_customers", "cancellation_customers", "product_portfolio", "memory_search", "campaign_approval", "support_cases", "product_recovery_tasks", "list_tasks"}
         intent_pass += intent_ok
         parameter_pass += parameter_ok
         safety_pass += safety_ok

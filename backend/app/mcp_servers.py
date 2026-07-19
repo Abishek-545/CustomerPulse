@@ -10,7 +10,7 @@ def customer_server() -> FastMCP:
 
     @mcp.resource("customer://segments")
     def segment_definitions() -> str:
-        return "at_risk_high_value: total spend >= £250 and churn risk >= 65%; active: every imported customer who does not meet that combined rule; seeded demo data may also use champion, new, or unsegmented"
+        return "Customer groups combine two independent dimensions: likelihood of not returning (65% threshold) and total customer spend (£250 threshold). Groups are high-spend at risk, lower-spend at risk, high-spend active, and regular active."
 
     @mcp.prompt()
     def investigate_churn(segment: str = "at_risk_high_value") -> str:
@@ -35,6 +35,16 @@ def customer_server() -> FastMCP:
     def find_customers_by_country(country: str, limit: int = 20) -> dict:
         with SessionLocal() as session:
             return domain.find_customers_by_country(session, country, limit)
+
+    @mcp.tool()
+    def find_customers_by_minimum_value(min_value: float, country: str | None = None, limit: int = 20) -> dict:
+        with SessionLocal() as session:
+            return domain.find_customers_by_minimum_value(session, min_value, country, limit)
+
+    @mcp.tool()
+    def find_frequent_cancellers(min_cancelled_orders: int = 1, limit: int = 10, exclude_feedback_targeted: bool = False) -> dict:
+        with SessionLocal() as session:
+            return domain.find_frequent_cancellers(session, min_cancelled_orders, limit, exclude_feedback_targeted)
 
     @mcp.tool()
     def get_customer_purchase_history(customer_id: int, limit: int = 20) -> dict:
@@ -83,6 +93,11 @@ def product_server() -> FastMCP:
     def find_high_cancellation_products(threshold: float = 0.10, limit: int = 10, exclude_open_recovery: bool = False) -> dict:
         with SessionLocal() as session:
             return domain.find_high_cancellation_products(session, threshold, limit, exclude_open_recovery)
+
+    @mcp.tool()
+    def analyze_product_portfolio(limit: int = 10) -> dict:
+        with SessionLocal() as session:
+            return domain.analyze_product_portfolio(session, limit)
     return mcp
 
 
@@ -96,6 +111,10 @@ def campaign_server() -> FastMCP:
     @mcp.prompt()
     def create_retention_campaign() -> str:
         return "Create a narrowly targeted draft after evidence is collected. Always submit it for human approval."
+
+    @mcp.prompt()
+    def create_feedback_campaign() -> str:
+        return "Select repeat cancellers using order evidence, create a deduplicated feedback draft, and pause for manager approval before email delivery."
 
     @mcp.tool()
     def create_campaign_draft(name: str, segment: str, offer: str, customer_ids: list[int], investigation_id: int | None = None) -> dict:

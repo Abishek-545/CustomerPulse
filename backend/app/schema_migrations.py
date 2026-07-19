@@ -23,3 +23,15 @@ def migrate_customer_email(engine: Engine) -> None:
             connection.execute(text("ALTER TABLE customers ALTER COLUMN email SET DEFAULT 'temp66642@gmail.com'"))
             connection.execute(text("ALTER TABLE customers ALTER COLUMN email SET NOT NULL"))
 
+
+def migrate_customer_segments(engine: Engine) -> None:
+    """Keep risk and value visible as two independent customer dimensions."""
+    with engine.begin() as connection:
+        connection.execute(text("""
+            UPDATE customers SET segment = CASE
+                WHEN churn_risk >= 0.65 AND lifetime_value >= 250 THEN 'at_risk_high_value'
+                WHEN churn_risk >= 0.65 THEN 'at_risk_lower_value'
+                WHEN lifetime_value >= 250 THEN 'high_value_active'
+                ELSE 'regular_active'
+            END
+        """))

@@ -1,7 +1,7 @@
 """Typed business operations. These are the only database functions exposed to agents."""
 from datetime import datetime
 from decimal import Decimal
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 from .email_service import deliver_campaign_emails, delivery_summary
 from .models import AgentRunStep, ApprovalRequest, AuditEvent, Campaign, CampaignOutcome, CampaignTarget, Customer, EmailDelivery, Investigation, Memory, OperationalTask, Order, Product, SupportCase
@@ -43,25 +43,51 @@ def find_churn_risk_customers(session: Session, min_risk: float = 0.65, limit: i
 
 
 def find_eligible_retention_customers(session: Session, limit: int = 20) -> dict:
-    blocked = select(CampaignTarget.customer_id)
+    blocked = select(CampaignTarget.customer_id).join(Campaign).where(Campaign.segment == "at_risk_high_value")
     rows = session.scalars(
         select(Customer)
         .where(Customer.segment == "at_risk_high_value", Customer.churn_risk >= 0.65, ~Customer.id.in_(blocked))
         .order_by(Customer.lifetime_value.desc())
         .limit(limit)
     ).all()
-    result = {"customers": [{"id": c.id, "external_id": c.external_id, "country": c.country, "segment": c.segment, "risk": c.churn_risk, "ltv": float(c.lifetime_value)} for c in rows], "selection_policy": "excludes every customer targeted by any earlier campaign"}
+    result = {"customers": [{"id": c.id, "external_id": c.external_id, "country": c.country, "segment": c.segment, "risk": c.churn_risk, "ltv": float(c.lifetime_value)} for c in rows], "selection_policy": "excludes customers already targeted by a retention campaign"}
     return audit(session, "find_eligible_retention_customers", {"limit": limit}, result)
 
 
 def top_customers_by_lifetime_value(session: Session, limit: int = 5) -> dict:
     rows = session.scalars(select(Customer).order_by(Customer.lifetime_value.desc()).limit(limit)).all()
-    return audit(session, "top_customers_by_lifetime_value", {"limit": limit}, {"customers": [{"id": c.id, "external_id": c.external_id, "country": c.country, "lifetime_value": float(c.lifetime_value), "risk": c.churn_risk} for c in rows]})
+    return audit(session, "top_customers_by_lifetime_value", {"limit": limit}, {"customers": [{"id": c.id, "external_id": c.external_id, "country": c.country, "segment": c.segment, "lifetime_value": float(c.lifetime_value), "risk": c.churn_risk} for c in rows]})
 
 
 def find_customers_by_country(session: Session, country: str, limit: int = 20) -> dict:
     rows = session.scalars(select(Customer).where(Customer.country.ilike(country)).order_by(Customer.lifetime_value.desc()).limit(limit)).all()
-    return audit(session, "find_customers_by_country", {"country": country, "limit": limit}, {"customers": [{"id": c.id, "external_id": c.external_id, "segment": c.segment, "lifetime_value": float(c.lifetime_value)} for c in rows]})
+    return audit(session, "find_customers_by_country", {"country": country, "limit": limit}, {"customers": [{"id": c.id, "external_id": c.external_id, "country": c.country, "segment": c.segment, "risk": c.churn_risk, "lifetime_value": float(c.lifetime_value)} for c in rows]})
+
+
+def find_customers_by_minimum_value(session: Session, min_value: float, country: str | None = None, limit: int = 20) -> dict:
+    query = select(Customer).where(Customer.lifetime_value >= min_value)
+    if country:
+        query = query.where(Customer.country.ilike(country))
+    rows = session.scalars(query.order_by(Customer.lifetime_value.desc()).limit(limit)).all()
+    customers = [{"id": c.id, "external_id": c.external_id, "country": c.country, "segment": c.segment, "risk": c.churn_risk, "lifetime_value": float(c.lifetime_value)} for c in rows]
+    return audit(session, "find_customers_by_minimum_value", {"min_value": min_value, "country": country, "limit": limit}, {"customers": customers, "minimum_lifetime_value": min_value})
+
+
+def find_frequent_cancellers(session: Session, min_cancelled_orders: int = 1, limit: int = 10, exclude_feedback_targeted: bool = False) -> dict:
+    cancelled = func.sum(case((Order.status == "cancelled", 1), else_=0))
+    total = func.count(Order.id)
+    cancelled_value = func.sum(case((Order.status == "cancelled", func.abs(Order.total)), else_=0))
+    query = (select(Customer, cancelled.label("cancelled_orders"), total.label("total_orders"), cancelled_value.label("cancelled_value"))
+             .join(Order, Order.customer_id == Customer.id)
+             .group_by(Customer.id)
+             .having(cancelled >= min_cancelled_orders))
+    if exclude_feedback_targeted:
+        blocked = select(CampaignTarget.customer_id).join(Campaign).where(Campaign.segment == "frequent_cancellers")
+        query = query.where(~Customer.id.in_(blocked))
+    rows = session.execute(query.order_by(cancelled.desc(), (cancelled * 1.0 / total).desc(), cancelled_value.desc()).limit(limit)).all()
+    customers = [{"id": c.id, "external_id": c.external_id, "country": c.country, "segment": c.segment, "risk": c.churn_risk, "ltv": float(c.lifetime_value), "cancelled_orders": int(cancel_count), "total_orders": int(order_count), "cancellation_rate": float(cancel_count / order_count), "cancelled_value": float(value or 0)} for c, cancel_count, order_count, value in rows]
+    policy = "excludes customers already contacted by a cancellation-feedback campaign" if exclude_feedback_targeted else "ranks customers by cancelled order count, cancellation rate, then cancelled value"
+    return audit(session, "find_frequent_cancellers", {"min_cancelled_orders": min_cancelled_orders, "limit": limit, "exclude_feedback_targeted": exclude_feedback_targeted}, {"customers": customers, "selection_policy": policy})
 
 
 def get_customer_purchase_history(session: Session, customer_id: int, limit: int = 20) -> dict:
@@ -106,15 +132,26 @@ def find_high_cancellation_products(session: Session, threshold: float = 0.10, l
     return audit(session, "find_high_cancellation_products", {"threshold": threshold, "limit": limit, "exclude_open_recovery": exclude_open_recovery}, result)
 
 
+def analyze_product_portfolio(session: Session, limit: int = 10) -> dict:
+    prices = sorted(float(value) for value in session.scalars(select(Product.unit_price).where(Product.unit_price >= 0)).all())
+    middle = len(prices) // 2
+    split = ((prices[middle - 1] + prices[middle]) / 2 if len(prices) % 2 == 0 else prices[middle]) if prices else 0.0
+    low = session.scalars(select(Product).where(Product.unit_price <= split).order_by(Product.cancellation_rate.desc(), Product.unit_price.asc()).limit(limit)).all()
+    high = session.scalars(select(Product).where(Product.unit_price > split).order_by(Product.cancellation_rate.asc(), Product.unit_price.desc()).limit(limit)).all()
+    row = lambda p: {"id": p.id, "sku": p.external_sku, "name": p.name, "unit_price": float(p.unit_price), "cancellation_rate": p.cancellation_rate, "sales_trend": p.sales_trend}
+    result = {"price_split": split, "most_cancelled_low_value": [row(p) for p in low], "high_value_low_cancellation": [row(p) for p in high], "method": "Products are split at the dataset median unit price; each group is then ranked by cancellation rate."}
+    return audit(session, "analyze_product_portfolio", {"limit": limit}, result)
+
+
 def create_campaign_draft(session: Session, name: str, segment: str, offer: str, investigation_id: int | None = None, customer_ids: list[int] | None = None) -> dict:
     selected = customer_ids or []
     if selected:
         # Serialize competing campaign writers for the selected customers.
         session.scalars(select(Customer.id).where(Customer.id.in_(selected)).with_for_update()).all()
-    already_targeted = set(session.scalars(select(CampaignTarget.customer_id)).all())
+    already_targeted = set(session.scalars(select(CampaignTarget.customer_id).join(Campaign).where(Campaign.segment == segment)).all())
     eligible = list(dict.fromkeys(customer_id for customer_id in selected if customer_id not in already_targeted))
     if selected and not eligible:
-        raise ValueError("Every selected customer has already been targeted by an earlier campaign")
+        raise ValueError("Every selected customer has already been targeted by an earlier campaign of this type")
     campaign = Campaign(name=name, segment=segment, offer=offer, investigation_id=investigation_id)
     session.add(campaign)
     session.flush()
@@ -305,18 +342,20 @@ def explain_platform(session: Session, question: str = "What does this app do?")
     definitions = [
         {"term": "Lifetime value (LTV)", "plain_name": "Total customer spend", "meaning": "The total value of all recorded orders for one customer.", "calculation": "Sum of the customer's order totals.", "example": "£1,056 means the customer has placed orders worth £1,056 in this dataset."},
         {"term": "Churn risk", "plain_name": "Likelihood of not returning", "meaning": "An explainable estimate that a customer may not purchase again soon.", "calculation": "70% of purchase inactivity over 180 days, plus 25% when the customer ordered only once; capped at 95%.", "example": "95% means the customer has been inactive for a long time and/or purchased only once."},
-        {"term": "Customer segment", "plain_name": "Customer group", "meaning": "A business label used to group customers with similar value and risk.", "calculation": "At risk + high value requires churn risk of at least 65% and total spend of at least £250.", "example": "at_risk_high_value means valuable customer likely to stop buying; active means the customer does not meet that combined rule."},
+        {"term": "Customer segment", "plain_name": "Customer group", "meaning": "A business label that shows value and risk separately.", "calculation": "Risk uses a 65% threshold and spend uses a £250 threshold, producing four clear combinations.", "example": "A 95%-risk £50 customer is labelled lower-spend at risk; a 95%-risk £500 customer is labelled high-spend at risk."},
     ]
     agents = [
         {"name": "Supervisor", "role": "Understands the request, creates the plan, and chooses which specialists should work."},
         {"name": "Customer Intelligence Agent", "role": "Uses MCP tools to retrieve rankings, profiles, locations, purchase history, risk and customer value."},
+        {"name": "Customer Order Agent", "role": "Aggregates cancelled and completed invoices per customer to identify repeat cancellers for read-only analysis or manager-approved feedback outreach."},
         {"name": "Product Intelligence Agent", "role": "Checks product cancellations and performance when churn or campaigns are investigated."},
+        {"name": "Product Portfolio Agent", "role": "Compares lower-price products with high cancellation rates against higher-price products with low cancellation rates."},
         {"name": "Memory Agent", "role": "Retrieves previous business rules and learnings stored in PostgreSQL."},
         {"name": "Campaign & Safety Agent", "role": "Selects only eligible customers, prevents duplicate targeting, creates a draft, and requests human approval."},
         {"name": "Response Agent", "role": "Combines agent evidence into a clear answer without changing customer data."},
     ]
     if any(phrase in text for phrase in ("what does this app", "what this app", "what is this app", "how does this app", "what is customerpulse", "explain the app", "explain this app")):
-        answer = "CustomerPulse helps a customer-operations manager explore retail data, understand customer value and inactivity risk, investigate churn with specialist agents, and create deduplicated retention campaign drafts that require human approval."
+        answer = "CustomerPulse helps a customer-operations manager explore retail data, understand customer value and inactivity risk, analyze cancellation behavior, compare product quality signals, and prepare deduplicated retention or feedback actions that require human approval before email delivery."
     elif any(word in text for word in ("lifetime", "ltv", "spend", "parameter", "column", "metric", "segment", "churn")):
         answer = "These fields are derived business metrics, not original UCI columns. They turn transaction history into understandable customer value and risk signals."
     elif any(word in text for word in ("multi-agent", "multi agent", "agent", "role")):
@@ -329,13 +368,13 @@ def explain_platform(session: Session, question: str = "What does this app do?")
         "answer": answer,
         "definitions": definitions,
         "agents": agents,
-        "campaign_policy": "Read-only questions never create campaigns. Only an explicit create/draft campaign request can write a campaign, and approval is required before activation. Draft and active targets are excluded from later campaigns; when the eligible pool reaches zero, no campaign is created.",
+        "campaign_policy": "Read-only questions never create campaigns. Only an explicit create/draft request can write a campaign, and approval is required before activation. Duplicate targeting is prevented separately for each business purpose (retention or cancellation feedback); when an eligible pool reaches zero, nothing is created.",
     }
     return audit(session, "explain_platform", {"question": question}, result)
 
 
 def dashboard_summary(session: Session) -> dict:
-    blocked = select(CampaignTarget.customer_id)
+    blocked = select(CampaignTarget.customer_id).join(Campaign).where(Campaign.segment == "at_risk_high_value")
     return {
         "customers": session.scalar(select(func.count()).select_from(Customer)) or 0,
         "customers_with_email": session.scalar(select(func.count()).select_from(Customer).where(Customer.email.is_not(None), Customer.email != "")) or 0,
@@ -344,7 +383,7 @@ def dashboard_summary(session: Session) -> dict:
         "high_risk_customers": session.scalar(select(func.count()).select_from(Customer).where(Customer.churn_risk >= 0.65)) or 0,
         "high_value_at_risk": session.scalar(select(func.count()).select_from(Customer).where(Customer.segment == "at_risk_high_value")) or 0,
         "eligible_retention_customers": session.scalar(select(func.count()).select_from(Customer).where(Customer.segment == "at_risk_high_value", ~Customer.id.in_(blocked))) or 0,
-        "currently_targeted_customers": session.scalar(select(func.count(func.distinct(CampaignTarget.customer_id)))) or 0,
+        "currently_targeted_customers": session.scalar(select(func.count(func.distinct(CampaignTarget.customer_id))).join(Campaign).where(Campaign.segment == "at_risk_high_value")) or 0,
         "pending_approvals": session.scalar(select(func.count()).select_from(ApprovalRequest).where(ApprovalRequest.status == "pending")) or 0,
         "emails_sent": session.scalar(select(func.count()).select_from(EmailDelivery).where(EmailDelivery.status == "sent")) or 0,
         "emails_simulated": session.scalar(select(func.count()).select_from(EmailDelivery).where(EmailDelivery.status == "simulated")) or 0,

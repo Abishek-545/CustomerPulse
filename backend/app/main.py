@@ -14,7 +14,7 @@ from .config import settings
 from .mcp_client import mcp_client
 from .mcp_servers import SERVERS
 from .evaluations import list_evaluation_runs, run_offline_evaluations
-from .schema_migrations import migrate_customer_email
+from .schema_migrations import migrate_customer_email, migrate_customer_segments
 
 
 MCP_SERVERS = {name: factory() for name, factory in SERVERS.items()}
@@ -26,6 +26,7 @@ async def lifespan(_: FastAPI):
     migrate_customer_email(engine)
     with next(get_session()) as session:
         seed(session)
+    migrate_customer_segments(engine)
     async with AsyncExitStack() as stack:
         for server in MCP_SERVERS.values():
             await stack.enter_async_context(server.session_manager.run())

@@ -12,6 +12,9 @@ ACTION_DESCRIPTIONS = {
     "customer_detail": "Retrieve one customer profile.",
     "purchase_history": "Retrieve one customer's invoices.",
     "country_customers": "Find customers in a country.",
+    "value_customers": "Find customers whose total lifetime spend meets a minimum.",
+    "cancellation_customers": "Rank customers by cancelled-order behavior.",
+    "product_portfolio": "Compare low-price/high-cancellation and high-price/low-cancellation products.",
     "risk_customers": "Find high-risk or retention-eligible customers.",
     "product_signals": "Inspect cancellation and declining-product signals.",
     "memory_search": "Retrieve prior operational learnings.",
@@ -25,7 +28,8 @@ ACTION_DESCRIPTIONS = {
 
 AGENTS = {
     "knowledge": "Knowledge Agent", "top_customers": "Customer Intelligence Agent", "customer_detail": "Customer Intelligence Agent",
-    "purchase_history": "Customer Intelligence Agent", "country_customers": "Customer Intelligence Agent", "risk_customers": "Customer Intelligence Agent",
+    "purchase_history": "Customer Intelligence Agent", "country_customers": "Customer Intelligence Agent", "value_customers": "Customer Intelligence Agent", "risk_customers": "Customer Intelligence Agent",
+    "cancellation_customers": "Customer Order Agent", "product_portfolio": "Product Portfolio Agent",
     "product_signals": "Product Intelligence Agent", "memory_search": "Memory Agent", "campaign_draft": "Campaign & Safety Agent",
     "campaign_approval": "Campaign & Safety Agent", "support_cases": "Customer Care Agent", "product_recovery_tasks": "Product Operations Agent",
     "list_tasks": "Operations Agent", "campaign_outcome": "Learning Agent",
@@ -37,6 +41,10 @@ TEMPLATES = {
     "customer_detail": ["customer_detail"],
     "purchase_history": ["purchase_history"],
     "country_customers": ["country_customers"],
+    "value_customers": ["value_customers"],
+    "cancellation_customers": ["cancellation_customers"],
+    "feedback_campaign": ["cancellation_customers", "memory_search", "campaign_draft", "campaign_approval"],
+    "product_portfolio": ["product_portfolio"],
     "churn_analysis": ["risk_customers", "product_signals", "memory_search"],
     "retention_campaign": ["risk_customers", "product_signals", "memory_search", "campaign_draft", "campaign_approval"],
     "support_triage": ["risk_customers", "support_cases"],
@@ -46,7 +54,7 @@ TEMPLATES = {
 }
 
 WRITE_ACTIONS = {"campaign_draft", "campaign_approval", "support_cases", "product_recovery_tasks", "campaign_outcome"}
-DEPENDENCY_PLANS = {"churn_analysis", "retention_campaign", "support_triage", "product_recovery", "campaign_outcome"}
+DEPENDENCY_PLANS = {"churn_analysis", "retention_campaign", "feedback_campaign", "support_triage", "product_recovery", "campaign_outcome"}
 
 
 def normalize_actions(route: AgentRoute, proposed: list[str]) -> list[str]:
@@ -60,7 +68,7 @@ def normalize_actions(route: AgentRoute, proposed: list[str]) -> list[str]:
 
 def _allowed(route: AgentRoute) -> set[str]:
     allowed = set(ACTION_DESCRIPTIONS) - WRITE_ACTIONS
-    if route.intent == "retention_campaign": allowed |= {"campaign_draft", "campaign_approval"}
+    if route.intent in {"retention_campaign", "feedback_campaign"}: allowed |= {"campaign_draft", "campaign_approval"}
     if route.intent == "support_triage": allowed.add("support_cases")
     if route.intent == "product_recovery": allowed.add("product_recovery_tasks")
     if route.intent == "campaign_outcome": allowed.add("campaign_outcome")
@@ -98,7 +106,7 @@ def replan(goal: str, route: AgentRoute, completed: list[str], remaining: list[d
     """Observe a result and decide whether to continue, stop, or revise safely."""
     if latest.get("error"):
         return {"decision": "continue", "rationale": "The failed step was recorded; continue with independent remaining work.", "remaining": remaining}
-    if completed and completed[-1] == "risk_customers" and not latest.get("customers"):
+    if completed and completed[-1] in {"risk_customers", "cancellation_customers"} and not latest.get("customers"):
         safe_remaining = [step for step in remaining if step["action"] not in {"campaign_draft", "campaign_approval", "support_cases"}]
         return {"decision": "finish" if not safe_remaining else "continue", "rationale": "No qualifying customers were found, so dependent write actions were removed.", "remaining": safe_remaining}
     if completed and completed[-1] == "product_signals" and not latest.get("products"):

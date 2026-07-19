@@ -1,9 +1,10 @@
+from datetime import datetime
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 from app.db import Base
-from app.domain import create_campaign_draft, create_product_recovery_tasks, create_support_cases_for_customers, dashboard_summary, decide_campaign_approval, explain_platform, find_churn_risk_customers, find_eligible_retention_customers, find_high_cancellation_products, list_operational_tasks, request_campaign_approval, retry_campaign_delivery, simulate_campaign_outcome
+from app.domain import analyze_product_portfolio, create_campaign_draft, create_product_recovery_tasks, create_support_cases_for_customers, dashboard_summary, decide_campaign_approval, explain_platform, find_churn_risk_customers, find_customers_by_minimum_value, find_eligible_retention_customers, find_frequent_cancellers, find_high_cancellation_products, list_operational_tasks, request_campaign_approval, retry_campaign_delivery, simulate_campaign_outcome
 from app.evaluations import run_offline_evaluations
-from app.models import CampaignTarget, Customer, EmailDelivery, Memory, Product
+from app.models import CampaignTarget, Customer, EmailDelivery, Memory, Order, Product
 from app.planner import TEMPLATES, normalize_actions
 from app.reasoner import route_goal
 from app.config import settings
@@ -35,6 +36,39 @@ def test_read_only_customer_query_never_routes_to_campaign():
     assert route_goal("Create support cases for 6 risky customers").intent == "support_triage"
     assert route_goal("Create product recovery tasks for 5 products").intent == "product_recovery"
     assert route_goal("Campaign 12 conversion result").campaign_id == 12
+    assert route_goal("Show customers whose lifetime value is over 5000").intent == "value_customers"
+    assert route_goal("Show 20 customers with most cancelled orders").intent == "cancellation_customers"
+    assert route_goal("Create a feedback email campaign for 10 customers with cancelled orders").intent == "feedback_campaign"
+    assert route_goal("Show low-value products with most cancellations").intent == "product_portfolio"
+
+
+def test_customer_cancellation_value_and_product_portfolio_tools():
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine)()
+    customer = Customer(external_id="cancel-1", country="France", segment="at_risk_lower_value", churn_risk=0.95, lifetime_value=6000)
+    products = [Product(external_sku="low", name="Low", unit_price=5, cancellation_rate=.8), Product(external_sku="high", name="High", unit_price=100, cancellation_rate=.01)]
+    session.add_all([customer, *products]); session.flush()
+    session.add_all([Order(invoice_number="C-1", customer_id=customer.id, order_date=datetime.utcnow(), status="cancelled", total=-20), Order(invoice_number="C-2", customer_id=customer.id, order_date=datetime.utcnow(), status="cancelled", total=-30), Order(invoice_number="3", customer_id=customer.id, order_date=datetime.utcnow(), status="completed", total=50)])
+    session.commit()
+    cancellation = find_frequent_cancellers(session, limit=10)["customers"][0]
+    assert cancellation["cancelled_orders"] == 2
+    assert cancellation["cancellation_rate"] == 2 / 3
+    assert find_customers_by_minimum_value(session, 5000)["customers"][0]["external_id"] == "cancel-1"
+    portfolio = analyze_product_portfolio(session, 5)
+    assert portfolio["most_cancelled_low_value"][0]["sku"] == "low"
+    assert portfolio["high_value_low_cancellation"][0]["sku"] == "high"
+
+
+def test_campaign_deduplication_is_scoped_by_business_purpose():
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine)()
+    customer = Customer(external_id="multi-purpose", country="UK", segment="at_risk_high_value", churn_risk=.9, lifetime_value=500)
+    session.add(customer); session.commit()
+    create_campaign_draft(session, "Retention", "at_risk_high_value", "10%", customer_ids=[customer.id])
+    feedback = create_campaign_draft(session, "Feedback", "frequent_cancellers", "Tell us why", customer_ids=[customer.id])
+    assert feedback["target_count"] == 1
 
 
 def test_campaign_targets_are_saved_and_not_retargeted():
@@ -179,11 +213,11 @@ def test_outcome_requires_real_or_simulated_delivery():
         assert "email is delivered" in str(error)
 
 
-def test_40_case_agent_evaluation_suite_is_green():
+def test_48_case_agent_evaluation_suite_is_green():
     engine = create_engine("sqlite://")
     Base.metadata.create_all(engine)
     session = sessionmaker(bind=engine)()
     result = run_offline_evaluations(session)
-    assert result["scores"]["cases"] == 40
+    assert result["scores"]["cases"] == 48
     assert result["scores"]["intent_accuracy"] == 1.0
     assert result["scores"]["unsafe_action_prevention"] == 1.0

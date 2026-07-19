@@ -67,6 +67,12 @@ def _execute_action(action: str, state: AgentState) -> tuple[str | None, dict]:
         tool, output = "customer.get_purchase_history_by_external_id", mcp_client.call_tool("customer.get_purchase_history_by_external_id", external_id=params["customer_external_id"], limit=params["limit"])
     elif action == "country_customers":
         tool, output = "customer.find_customers_by_country", mcp_client.call_tool("customer.find_customers_by_country", country=params["country"], limit=params["limit"])
+    elif action == "value_customers":
+        tool, output = "customer.find_customers_by_minimum_value", mcp_client.call_tool("customer.find_customers_by_minimum_value", min_value=params["min_value"], country=params.get("country"), limit=params["limit"])
+    elif action == "cancellation_customers":
+        tool, output = "customer.find_frequent_cancellers", mcp_client.call_tool("customer.find_frequent_cancellers", min_cancelled_orders=params["min_cancelled_orders"], limit=params["limit"], exclude_feedback_targeted=state["intent"] == "feedback_campaign")
+    elif action == "product_portfolio":
+        tool, output = "product.analyze_product_portfolio", mcp_client.call_tool("product.analyze_product_portfolio", limit=params["limit"])
     elif action == "risk_customers":
         if state["intent"] == "retention_campaign":
             tool, output = "customer.find_eligible_retention_customers", mcp_client.call_tool("customer.find_eligible_retention_customers", limit=params["limit"])
@@ -77,16 +83,18 @@ def _execute_action(action: str, state: AgentState) -> tuple[str | None, dict]:
     elif action == "memory_search":
         tool, output = "memory.search_memories", mcp_client.call_tool("memory.search_memories", query="campaign outcome offer retention", limit=5)
     elif action == "campaign_draft":
-        customers = observations.get("risk_customers", {}).get("customers", [])
-        ids = [item["id"] for item in customers if item.get("segment") == "at_risk_high_value"]
+        feedback = state["intent"] == "feedback_campaign"
+        customers = observations.get("cancellation_customers" if feedback else "risk_customers", {}).get("customers", [])
+        ids = [item["id"] for item in customers if feedback or item.get("segment") == "at_risk_high_value"]
         tool = "campaign.create_campaign_draft"
-        output = mcp_client.call_tool(tool, name="Win-back: high-value inactive customers", segment="at_risk_high_value", offer="10% welcome-back discount", investigation_id=investigation_id, customer_ids=ids) if ids else {"created": False, "target_count": 0, "reason": "No eligible customers"}
+        output = mcp_client.call_tool(tool, name="Cancellation feedback outreach" if feedback else "Win-back: high-value inactive customers", segment="frequent_cancellers" if feedback else "at_risk_high_value", offer="Please share feedback about your cancelled orders" if feedback else "10% welcome-back discount", investigation_id=investigation_id, customer_ids=ids) if ids else {"created": False, "target_count": 0, "reason": "No eligible customers"}
     elif action == "campaign_approval":
         draft = observations.get("campaign_draft", {})
         if not draft.get("campaign_id"):
             return None, {"created": False, "reason": "No draft exists, so approval was skipped"}
         tool = "campaign.request_campaign_approval"
-        output = mcp_client.call_tool(tool, campaign_id=draft["campaign_id"], reason=f"Approve discount email for {draft['target_count']} deduplicated customers.")
+        purpose = "feedback request" if state["intent"] == "feedback_campaign" else "discount email"
+        output = mcp_client.call_tool(tool, campaign_id=draft["campaign_id"], reason=f"Approve {purpose} for {draft['target_count']} deduplicated customers.")
     elif action == "support_cases":
         customers = observations.get("risk_customers", {}).get("customers", [])
         tool = "operations.create_support_cases_for_customers"
@@ -155,13 +163,13 @@ def response_agent(state: AgentState) -> AgentState:
     intent, observations = state["intent"], state.get("observations", {})
     direct_data = observations.get({
         "help": "knowledge", "top_customers": "top_customers", "customer_detail": "customer_detail", "purchase_history": "purchase_history",
-        "country_customers": "country_customers", "operational_tasks": "list_tasks", "campaign_outcome": "campaign_outcome",
+        "country_customers": "country_customers", "value_customers": "value_customers", "cancellation_customers": "cancellation_customers", "product_portfolio": "product_portfolio", "operational_tasks": "list_tasks", "campaign_outcome": "campaign_outcome",
     }.get(intent, "risk_customers"), {})
     agents = list(dict.fromkeys(step["agent"] for step in state.get("plan", []))) + ["Observer/Replanner", "Response Agent"]
-    if intent == "retention_campaign":
+    if intent in ("retention_campaign", "feedback_campaign"):
         draft, approval = observations.get("campaign_draft", {}), observations.get("campaign_approval", {})
         created = bool(draft.get("campaign_id"))
-        result = {"kind": "campaign", "created": created, **draft, "approval_id": approval.get("approval_id"), "agents": agents, "decision_log": state.get("decision_log", []), "summary": f"Autonomous plan created a draft for {draft.get('target_count', 0)} unique customers and paused for manager approval." if created else "No eligible customers remained, so the autonomous agent safely created nothing."}
+        result = {"kind": "campaign", "campaign_type": "feedback" if intent == "feedback_campaign" else "retention", "created": created, **draft, "approval_id": approval.get("approval_id"), "agents": agents, "decision_log": state.get("decision_log", []), "summary": f"Autonomous plan created a draft for {draft.get('target_count', 0)} unique customers and paused for manager approval." if created else "No eligible customers remained, so the autonomous agent safely created nothing."}
     elif intent in ("support_triage", "product_recovery"):
         action = "support_cases" if intent == "support_triage" else "product_recovery_tasks"
         data = observations.get(action, {})

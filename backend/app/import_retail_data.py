@@ -65,8 +65,9 @@ def update_operational_metrics(session) -> None:
     session.execute(text("""
         UPDATE customers SET segment = CASE
             WHEN churn_risk >= 0.65 AND lifetime_value >= 250 THEN 'at_risk_high_value'
-            WHEN lifetime_value >= 500 THEN 'champion'
-            ELSE 'active'
+            WHEN churn_risk >= 0.65 THEN 'at_risk_lower_value'
+            WHEN lifetime_value >= 250 THEN 'high_value_active'
+            ELSE 'regular_active'
         END
     """))
     session.execute(text("""
